@@ -1,0 +1,433 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { TENANT_SLUG } from "../config/appConfig";
+import { askAI } from "../services/aiService";
+import { CALENDLY_URL, shouldOfferBooking } from "../services/bookingService";
+import { recordAndDispatchEvent } from "../services/eventService";
+import { createLead, updateLeadDetails } from "../services/leadService";
+import {
+  getMessagesBySession,
+  saveChatMessage,
+} from "../services/messageService";
+import {
+  type LeadProfileUpdate,
+  upsertLeadProfile,
+} from "../services/profileService";
+import {
+  calculateLeadScore,
+  saveScoringSignals,
+  type LeadScore,
+} from "../services/scoringService";
+import {
+  getSessionMeta,
+  markSummaryNotificationSent,
+} from "../services/sessionMetaService";
+import { createChatSession } from "../services/sessionService";
+import {
+  isConversationSummaryReady,
+  updateConversationSummary,
+} from "../services/summaryService";
+import { getTenantBySlug } from "../services/tenantService";
+import type {
+  ConversationSummary,
+  LeadProfile,
+  LeadSignals,
+} from "../types/ai";
+import type { ChatMessage } from "../types/chat";
+import { ChatContext } from "./chatContext";
+
+const WELCOME_MESSAGE: ChatMessage = {
+  role: "assistant",
+  content:
+    "Hi, welcome to TechQuarters AI. Tell us what you want to improve, automate, or build, and we’ll point you in the right direction.",
+};
+const STORAGE_KEY = "tq-chatbot-state-v1";
+
+type ChatIdentity = {
+  tenantId: string;
+  leadId: string;
+  sessionId: string;
+};
+
+type AutomationState = {
+  profile: LeadProfile;
+  summary: ConversationSummary;
+  leadScore?: LeadScore;
+  signals?: LeadSignals;
+  stage?: string;
+};
+
+type StoredChatState = {
+  identity?: ChatIdentity;
+  messages?: ChatMessage[];
+  automation?: AutomationState;
+  summaryEventSent?: boolean;
+  bookingOfferedSent?: boolean;
+};
+
+function readStoredState(): StoredChatState {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") as StoredChatState;
+  } catch {
+    return {};
+  }
+}
+
+function mergeProfile(
+  previous: LeadProfile,
+  update?: LeadProfileUpdate,
+): LeadProfile {
+  if (!update) return previous;
+
+  return Object.fromEntries(
+    Object.entries({ ...previous, ...update }).filter(
+      ([, value]) => typeof value === "string" && value.trim().length > 0,
+    ),
+  );
+}
+
+function mergeSummary(
+  previous: ConversationSummary,
+  update?: ConversationSummary,
+): ConversationSummary {
+  if (!update) return previous;
+
+  return Object.fromEntries(
+    Object.entries({ ...previous, ...update }).filter(
+      ([, value]) => typeof value === "string" && value.trim().length > 0,
+    ),
+  );
+}
+
+export function ChatProvider({ children }: { children: ReactNode }) {
+  const [storedState] = useState(readStoredState);
+  const [isOpen, setIsOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    storedState.messages?.length
+      ? storedState.messages
+      : [WELCOME_MESSAGE],
+  );
+  const [input, setInput] = useState("");
+  const [isTyping, setIsTyping] = useState(false);
+  const identityRef = useRef<ChatIdentity | undefined>(
+    storedState.identity,
+  );
+  const initializationRef = useRef<Promise<ChatIdentity | undefined> | null>(
+    null,
+  );
+  const automationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const automationRef = useRef<AutomationState>(
+    storedState.automation || { profile: {}, summary: {} },
+  );
+  const summaryEventSentRef = useRef(
+    Boolean(storedState.summaryEventSent),
+  );
+  const bookingOfferedSentRef = useRef(
+    Boolean(storedState.bookingOfferedSent),
+  );
+
+  const persistState = useCallback((nextMessages: ChatMessage[] = messages) => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        identity: identityRef.current,
+        messages: nextMessages,
+        automation: automationRef.current,
+        summaryEventSent: summaryEventSentRef.current,
+        bookingOfferedSent: bookingOfferedSentRef.current,
+      } satisfies StoredChatState),
+    );
+  }, [messages]);
+
+  const initializeChat = useCallback(async () => {
+    if (identityRef.current) return identityRef.current;
+    if (initializationRef.current) return initializationRef.current;
+
+    initializationRef.current = (async () => {
+      try {
+        const tenant = await getTenantBySlug(TENANT_SLUG);
+        const lead = await createLead(tenant.id);
+        const session = await createChatSession(tenant.id, lead.id);
+        const identity = {
+          tenantId: tenant.id,
+          leadId: lead.id,
+          sessionId: session.id,
+        };
+        identityRef.current = identity;
+        persistState();
+        return identity;
+      } catch (error) {
+        console.error("Chat persistence initialization failed:", error);
+        return undefined;
+      } finally {
+        initializationRef.current = null;
+      }
+    })();
+
+    return initializationRef.current;
+  }, [persistState]);
+
+  useEffect(() => {
+    const storedIdentity = identityRef.current;
+    if (!storedIdentity || storedState.messages?.length) {
+      if (!storedIdentity) void initializeChat();
+      return;
+    }
+
+    void getMessagesBySession(storedIdentity.sessionId)
+      .then((savedMessages) => {
+        if (!savedMessages.length) return;
+        const restored = [WELCOME_MESSAGE, ...savedMessages] as ChatMessage[];
+        setMessages(restored);
+        persistState(restored);
+      })
+      .catch((error) => console.error("Chat history restore failed:", error));
+  }, [initializeChat, persistState, storedState.messages?.length]);
+
+  useEffect(() => {
+    persistState(messages);
+  }, [messages, persistState]);
+
+  const openChat = useCallback(() => {
+    setIsOpen(true);
+    void initializeChat();
+  }, [initializeChat]);
+  const closeChat = useCallback(() => setIsOpen(false), []);
+
+  const processAutomation = useCallback(
+    async (
+      identity: ChatIdentity,
+      response: Awaited<ReturnType<typeof askAI>>,
+      leadScore: LeadScore,
+      offerBooking: boolean,
+    ) => {
+      const profile = mergeProfile(
+        automationRef.current.profile,
+        response.profile,
+      );
+      const summary = mergeSummary(
+        automationRef.current.summary,
+        response.summary,
+      );
+      const summaryReady = isConversationSummaryReady(profile, summary);
+
+      automationRef.current = {
+        profile,
+        summary,
+        leadScore,
+        signals: response.signals,
+        stage: response.stage,
+      };
+      persistState();
+
+      if (Object.keys(profile).length > 0) {
+        await upsertLeadProfile(identity.leadId, profile);
+        await updateLeadDetails(identity.leadId, profile);
+      }
+
+      if (summaryReady) {
+        await updateConversationSummary(identity.sessionId, summary);
+      }
+
+      await saveScoringSignals(identity.leadId, response.signals);
+
+      if (summaryReady && !summaryEventSentRef.current) {
+        let alreadySent = false;
+        try {
+          const meta = await getSessionMeta(identity.sessionId);
+          alreadySent = Boolean(meta.summary_notification_sent);
+        } catch (error) {
+          console.warn("Summary notification status unavailable:", error);
+        }
+
+        if (!alreadySent) {
+          await recordAndDispatchEvent({
+            event_type: "conversation_summary_ready",
+            tenant_id: identity.tenantId,
+            lead_id: identity.leadId,
+            session_id: identity.sessionId,
+            ai_stage: response.stage,
+            lead_score: leadScore,
+            signals: response.signals,
+            profile,
+            summary,
+          });
+          try {
+            await markSummaryNotificationSent(identity.sessionId);
+          } catch (error) {
+            console.warn("Could not mark summary notification sent:", error);
+          }
+        }
+
+        summaryEventSentRef.current = true;
+        persistState();
+      }
+
+      if (
+        offerBooking &&
+        summaryReady &&
+        summaryEventSentRef.current &&
+        !bookingOfferedSentRef.current
+      ) {
+        const meta = await getSessionMeta(identity.sessionId);
+        if (!meta.summary_notification_sent) {
+          throw new Error(
+            "Booking event blocked until the summary notification is sent",
+          );
+        }
+
+        await recordAndDispatchEvent({
+          event_type: "booking_offered",
+          tenant_id: identity.tenantId,
+          lead_id: identity.leadId,
+          session_id: identity.sessionId,
+          booking_url: CALENDLY_URL,
+          ai_stage: response.stage,
+          lead_score: leadScore,
+          signals: response.signals,
+          profile,
+          summary,
+        });
+        bookingOfferedSentRef.current = true;
+        persistState();
+      }
+    },
+    [persistState],
+  );
+
+  const sendMessage = useCallback(
+    async (text?: string) => {
+      const messageText = (text ?? input).trim();
+      if (!messageText || isTyping) return;
+
+      const userMessage: ChatMessage = { role: "user", content: messageText };
+      const conversation = [...messages, userMessage];
+      setInput("");
+      setMessages(conversation);
+      setIsTyping(true);
+
+      try {
+        const identity = await initializeChat();
+        if (identity) await saveChatMessage(identity.sessionId, userMessage);
+
+        const response = await askAI(conversation);
+        const leadScore = calculateLeadScore(response.signals);
+        const bookingRequested = shouldOfferBooking(response, leadScore);
+        const mergedProfile = mergeProfile(
+          automationRef.current.profile,
+          response.profile,
+        );
+        const mergedSummary = mergeSummary(
+          automationRef.current.summary,
+          response.summary,
+        );
+        const offerBooking =
+          bookingRequested &&
+          isConversationSummaryReady(mergedProfile, mergedSummary);
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content:
+            response.reply ||
+            "Thanks. What outcome would make this project a success?",
+          stage: response.stage,
+          signals: response.signals,
+          showBookingCta: offerBooking,
+        };
+        const nextMessages = [...conversation, assistantMessage];
+        setMessages(nextMessages);
+
+        if (identity) {
+          await saveChatMessage(identity.sessionId, assistantMessage);
+          automationQueueRef.current = automationQueueRef.current
+            .then(() =>
+              processAutomation(
+                identity,
+                response,
+                leadScore,
+                offerBooking,
+              ),
+            )
+            .catch((error) =>
+              console.error("Chat automation pipeline failed:", error),
+            );
+        }
+      } catch (error) {
+        console.error("Chat request failed:", error);
+        setMessages((previous) => [
+          ...previous,
+          {
+            role: "assistant",
+            content:
+              "I’m having trouble connecting right now. Please try again, or email hello@techquarters.ai.",
+          },
+        ]);
+      } finally {
+        setIsTyping(false);
+      }
+    },
+    [
+      initializeChat,
+      input,
+      isTyping,
+      messages,
+      processAutomation,
+    ],
+  );
+
+  const trackBookingClick = useCallback(() => {
+    void (async () => {
+      const identity = await initializeChat();
+      if (!identity) return;
+
+      await automationQueueRef.current;
+      const state = automationRef.current;
+      await recordAndDispatchEvent({
+        event_type: "booking_clicked",
+        tenant_id: identity.tenantId,
+        lead_id: identity.leadId,
+        session_id: identity.sessionId,
+        booking_url: CALENDLY_URL,
+        ai_stage: state.stage,
+        lead_score: state.leadScore,
+        signals: state.signals,
+        profile: state.profile,
+        summary: state.summary,
+      });
+    })().catch((error) =>
+      console.error("Booking click event failed:", error),
+    );
+  }, [initializeChat]);
+
+  const value = useMemo(
+    () => ({
+      isOpen,
+      openChat,
+      closeChat,
+      messages,
+      input,
+      setInput,
+      isTyping,
+      sendMessage,
+      trackBookingClick,
+    }),
+    [
+      isOpen,
+      openChat,
+      closeChat,
+      messages,
+      input,
+      isTyping,
+      sendMessage,
+      trackBookingClick,
+    ],
+  );
+
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
+}
+

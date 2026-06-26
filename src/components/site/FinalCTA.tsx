@@ -1,0 +1,4 @@
+import { CALENDLY_URL } from "../../config/appConfig";
+import { useChat } from "../../hooks/useChat";
+import Icon from "../ui/Icon";
+export default function FinalCTA() { const { openChat, trackBookingClick } = useChat(); return <section className="section"><div className="container final-cta"><div><span className="eyebrow">YOUR NEXT SYSTEM STARTS HERE</span><h2>Ready to Build a Smarter Business System?</h2><p>Tell us what is slowing your team down. We’ll help identify the right AI, automation, or software solution.</p></div><div className="cta-actions"><button className="button button-primary button-large" onClick={openChat}><Icon name="chat"/> Start Chat</button><a className="button button-secondary button-large" href={CALENDLY_URL} target="_blank" rel="noreferrer" onClick={trackBookingClick}><Icon name="calendar"/> Book a Strategy Call</a></div></div></section>; }

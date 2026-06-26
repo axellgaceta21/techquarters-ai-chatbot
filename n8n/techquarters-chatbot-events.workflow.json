@@ -1,0 +1,211 @@
+{
+    "name":  "TechQuarters Chatbot Events",
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "httpMethod":  "POST",
+                                         "path":  "tq-chatbot-events",
+                                         "responseMode":  "lastNode",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "webhook-events",
+                      "name":  "TechQuarters Event Webhook",
+                      "type":  "n8n-nodes-base.webhook",
+                      "typeVersion":  2,
+                      "position":  [
+                                       0,
+                                       0
+                                   ],
+                      "webhookId":  "tq-chatbot-events"
+                  },
+                  {
+                      "parameters":  {
+                                         "rules":  {
+                                                       "values":  [
+                                                                      {
+                                                                          "conditions":  {
+                                                                                             "options":  {
+                                                                                                             "caseSensitive":  true,
+                                                                                                             "typeValidation":  "strict",
+                                                                                                             "version":  2
+                                                                                                         },
+                                                                                             "conditions":  [
+                                                                                                                {
+                                                                                                                    "leftValue":  "={{ $json.body.event_type }}",
+                                                                                                                    "rightValue":  "conversation_summary_ready",
+                                                                                                                    "operator":  {
+                                                                                                                                     "type":  "string",
+                                                                                                                                     "operation":  "equals"
+                                                                                                                                 }
+                                                                                                                }
+                                                                                                            ],
+                                                                                             "combinator":  "and"
+                                                                                         },
+                                                                          "renameOutput":  true,
+                                                                          "outputKey":  "conversation_summary_ready"
+                                                                      },
+                                                                      {
+                                                                          "conditions":  {
+                                                                                             "options":  {
+                                                                                                             "caseSensitive":  true,
+                                                                                                             "typeValidation":  "strict",
+                                                                                                             "version":  2
+                                                                                                         },
+                                                                                             "conditions":  [
+                                                                                                                {
+                                                                                                                    "leftValue":  "={{ $json.body.event_type }}",
+                                                                                                                    "rightValue":  "booking_offered",
+                                                                                                                    "operator":  {
+                                                                                                                                     "type":  "string",
+                                                                                                                                     "operation":  "equals"
+                                                                                                                                 }
+                                                                                                                }
+                                                                                                            ],
+                                                                                             "combinator":  "and"
+                                                                                         },
+                                                                          "renameOutput":  true,
+                                                                          "outputKey":  "booking_offered"
+                                                                      },
+                                                                      {
+                                                                          "conditions":  {
+                                                                                             "options":  {
+                                                                                                             "caseSensitive":  true,
+                                                                                                             "typeValidation":  "strict",
+                                                                                                             "version":  2
+                                                                                                         },
+                                                                                             "conditions":  [
+                                                                                                                {
+                                                                                                                    "leftValue":  "={{ $json.body.event_type }}",
+                                                                                                                    "rightValue":  "booking_clicked",
+                                                                                                                    "operator":  {
+                                                                                                                                     "type":  "string",
+                                                                                                                                     "operation":  "equals"
+                                                                                                                                 }
+                                                                                                                }
+                                                                                                            ],
+                                                                                             "combinator":  "and"
+                                                                                         },
+                                                                          "renameOutput":  true,
+                                                                          "outputKey":  "booking_clicked"
+                                                                      }
+                                                                  ]
+                                                   },
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "switch-event-type",
+                      "name":  "Route Event Type",
+                      "type":  "n8n-nodes-base.switch",
+                      "typeVersion":  3.2,
+                      "position":  [
+                                       240,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "chatId":  "={{ $env.TELEGRAM_CHAT_ID }}",
+                                         "text":  "=ðŸ§  Conversation Summary Ready\n\nLead: {{ $json.body.lead_id }}\nSession: {{ $json.body.session_id }}\n\nAI Summary: {{ $json.body.ai_summary || \u0027Not provided\u0027 }}\nBuying Intent: {{ $json.body.buying_intent || \u0027Not provided\u0027 }}\nPain Points: {{ $json.body.pain_points || \u0027Not provided\u0027 }}\nRecommended Next Action: {{ $json.body.recommendation || \u0027Not provided\u0027 }}\n\nProfile: {{ JSON.stringify($json.body.profile || {}) }}",
+                                         "additionalFields":  {
+
+                                                              }
+                                     },
+                      "id":  "telegram-summary",
+                      "name":  "Telegram - Conversation Summary",
+                      "type":  "n8n-nodes-base.telegram",
+                      "typeVersion":  1.2,
+                      "position":  [
+                                       520,
+                                       -180
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "chatId":  "={{ $env.TELEGRAM_CHAT_ID }}",
+                                         "text":  "=ðŸ“… Strategy Call Offered\n\nLead: {{ $json.body.lead_id }}\nLead Score: {{ $json.body.lead_score || \u0027Not provided\u0027 }}\nBooking URL: {{ $json.body.booking_url }}\n\nAI Summary: {{ $json.body.ai_summary || \u0027Not provided\u0027 }}\nBuying Intent: {{ $json.body.buying_intent || \u0027Not provided\u0027 }}\nPain Points: {{ $json.body.pain_points || \u0027Not provided\u0027 }}\nRecommendation: {{ $json.body.recommendation || \u0027Not provided\u0027 }}\n\nProfile: {{ JSON.stringify($json.body.profile || {}) }}",
+                                         "additionalFields":  {
+
+                                                              }
+                                     },
+                      "id":  "telegram-booking-offered",
+                      "name":  "Telegram - Booking Offered",
+                      "type":  "n8n-nodes-base.telegram",
+                      "typeVersion":  1.2,
+                      "position":  [
+                                       520,
+                                       0
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "chatId":  "={{ $env.TELEGRAM_CHAT_ID }}",
+                                         "text":  "=âœ… Booking Link Clicked\n\nLead: {{ $json.body.lead_id }}\nSession: {{ $json.body.session_id }}\nBooking URL: {{ $json.body.booking_url }}\n\nAI Summary: {{ $json.body.ai_summary || \u0027Not provided\u0027 }}\nBuying Intent: {{ $json.body.buying_intent || \u0027Not provided\u0027 }}\nPain Points: {{ $json.body.pain_points || \u0027Not provided\u0027 }}\nRecommendation: {{ $json.body.recommendation || \u0027Not provided\u0027 }}\n\nProfile: {{ JSON.stringify($json.body.profile || {}) }}",
+                                         "additionalFields":  {
+
+                                                              }
+                                     },
+                      "id":  "telegram-booking-clicked",
+                      "name":  "Telegram - Booking Clicked",
+                      "type":  "n8n-nodes-base.telegram",
+                      "typeVersion":  1.2,
+                      "position":  [
+                                       520,
+                                       180
+                                   ]
+                  }
+              ],
+    "connections":  {
+                        "TechQuarters Event Webhook":  {
+                                                           "main":  [
+                                                                        [
+                                                                            {
+                                                                                "node":  "Route Event Type",
+                                                                                "type":  "main",
+                                                                                "index":  0
+                                                                            }
+                                                                        ]
+                                                                    ]
+                                                       },
+                        "Route Event Type":  {
+                                                 "main":  [
+                                                              [
+                                                                  {
+                                                                      "node":  "Telegram - Conversation Summary",
+                                                                      "type":  "main",
+                                                                      "index":  0
+                                                                  }
+                                                              ],
+                                                              [
+                                                                  {
+                                                                      "node":  "Telegram - Booking Offered",
+                                                                      "type":  "main",
+                                                                      "index":  0
+                                                                  }
+                                                              ],
+                                                              [
+                                                                  {
+                                                                      "node":  "Telegram - Booking Clicked",
+                                                                      "type":  "main",
+                                                                      "index":  0
+                                                                  }
+                                                              ]
+                                                          ]
+                                             }
+                    },
+    "pinData":  {
+
+                },
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "active":  false,
+    "meta":  {
+                 "templateCredsSetupCompleted":  false
+             },
+    "tags":  [
+
+             ]
+}

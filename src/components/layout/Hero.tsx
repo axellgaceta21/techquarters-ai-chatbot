@@ -1,0 +1,12 @@
+import { CALENDLY_URL } from "../../config/appConfig";
+import { useChat } from "../../hooks/useChat";
+import Icon from "../ui/Icon";
+
+export default function Hero() {
+  const { openChat, trackBookingClick } = useChat();
+  return <section className="hero"><div className="container hero-grid"><div className="hero-copy"><span className="eyebrow"><i/> AI SYSTEMS · AUTOMATION · SOFTWARE</span><h1>We Build AI Systems That Help Businesses <em>Move Faster.</em></h1><p>TechQuarters AI designs custom AI workflows, automations, software systems, and growth infrastructure that reduce manual work and help businesses scale.</p><div className="hero-actions"><button className="button button-primary button-large" onClick={openChat}><Icon name="chat"/> Start Chat</button><a className="button button-secondary button-large" href={CALENDLY_URL} target="_blank" rel="noreferrer" onClick={trackBookingClick}><Icon name="calendar"/> Book a Strategy Call</a></div><div className="hero-proof"><span><b>Fast</b> phased delivery</span><span><b>Practical</b> AI architecture</span><span><b>Scalable</b> by design</span></div></div><WorkflowVisual /></div></section>;
+}
+
+function WorkflowVisual() {
+  return <div className="workflow-wrap" aria-label="Animated AI workflow diagram"><div className="workflow-grid"/><div className="workflow-top"><span className="status-dot"/> SYSTEM ONLINE <small>Live orchestration</small></div><svg className="workflow-lines" viewBox="0 0 560 430"><path d="M80 95 C180 95 160 215 275 215 S390 95 480 95"/><path d="M80 335 C180 335 165 215 275 215 S380 335 480 335"/><path d="M275 215V65"/></svg><div className="node node-ai"><Icon name="spark"/><span>AI CORE</span><small>Reason & route</small></div><div className="node node-one"><Icon name="chat"/><span>INBOUND</span><small>New request</small></div><div className="node node-two"><Icon name="link"/><span>CRM</span><small>Data enriched</small></div><div className="node node-three"><Icon name="growth"/><span>ACTION</span><small>Workflow sent</small></div><div className="node node-four"><Icon name="check"/><span>COMPLETE</span><small>Team notified</small></div><div className="workflow-metric"><span>42 hrs</span><small>saved this week</small></div></div>;
+}
