@@ -1,7 +1,21 @@
 import Groq from "groq-sdk";
 import { env } from "../config/env.js";
 
-const groq = new Groq({ apiKey: env.GROQ_API_KEY || "missing" });
+function configurationError(variableName) {
+  const error = new Error(`${variableName} is not configured`);
+  error.statusCode = 500;
+  error.publicMessage = `Server configuration error: ${variableName} is missing.`;
+  return error;
+}
+
+function getGroqClient() {
+  if (!env.GROQ_API_KEY) {
+    throw configurationError("GROQ_API_KEY");
+  }
+
+  return new Groq({ apiKey: env.GROQ_API_KEY });
+}
+
 const stages = new Set([
   "intent",
   "business_context",
@@ -69,8 +83,6 @@ function normalizeResponse(raw) {
 }
 
 export async function generateChatResponse(messages = []) {
-  if (!env.GROQ_API_KEY) return fallbackResponse();
-
   const systemPrompt = `
 You are the TechQuarters AI Assistant.
 
@@ -169,7 +181,7 @@ Return only valid JSON in this exact shape:
       content: message.content,
     }));
 
-  const completion = await groq.chat.completions.create({
+  const completion = await getGroqClient().chat.completions.create({
     model: "llama-3.3-70b-versatile",
     temperature: 0.25,
     max_tokens: 900,
@@ -190,3 +202,4 @@ Return only valid JSON in this exact shape:
     return fallbackResponse();
   }
 }
+

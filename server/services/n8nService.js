@@ -4,8 +4,11 @@ export async function sendToN8n(payload) {
   const webhookUrl = env.N8N_WEBHOOK_URL;
 
   if (!webhookUrl) {
-    console.warn("N8N_WEBHOOK_URL not set. Skipping n8n dispatch.");
-    return { skipped: true };
+    const error = new Error("N8N_WEBHOOK_URL is not configured");
+    error.statusCode = 500;
+    error.publicMessage =
+      "Server configuration error: N8N_WEBHOOK_URL is missing.";
+    throw error;
   }
 
   const response = await fetch(webhookUrl, {
@@ -23,3 +26,4 @@ export async function sendToN8n(payload) {
 
   return { skipped: false, status: response.status };
 }
+
