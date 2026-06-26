@@ -24,14 +24,10 @@ export default function ChatPane() {
     trackBookingClick,
   } = useChat();
   const inputRef = useRef<HTMLInputElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (isOpen) window.setTimeout(() => inputRef.current?.focus(), 280);
   }, [isOpen]);
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isTyping]);
 
   if (!isOpen) return null;
 
@@ -99,7 +95,6 @@ export default function ChatPane() {
               <div className="typing"><i /><i /><i /></div>
             </div>
           )}
-          <div ref={bottomRef} />
         </div>
         <form
           className="chat-input"
