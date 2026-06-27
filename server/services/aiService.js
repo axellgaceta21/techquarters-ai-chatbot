@@ -79,6 +79,16 @@ function normalizeResponse(raw) {
       raw?.profile && typeof raw.profile === "object" ? raw.profile : {},
     summary:
       raw?.summary && typeof raw.summary === "object" ? raw.summary : {},
+    actions: bookingOffered
+      ? [
+          {
+            type: "booking_cta",
+            label: "Book a Strategy Call",
+            url: env.CALENDLY_URL,
+            helperText: "Choose a time that works for you.",
+          },
+        ]
+      : [],
   };
 }
 
@@ -207,6 +217,7 @@ Return only valid JSON in this exact shape:
     return fallbackResponse();
   }
 }
+
 
 
 

@@ -14,6 +14,7 @@ export async function saveChatMessage(
       stage: message.stage || null,
       signals: message.signals || null,
       show_booking_cta: Boolean(message.showBookingCta),
+      actions: message.actions || [],
     },
   });
 
@@ -42,5 +43,8 @@ export async function getMessagesBySession(sessionId: string) {
     stage: message.metadata?.stage || undefined,
     signals: message.metadata?.signals || undefined,
     showBookingCta: Boolean(message.metadata?.show_booking_cta),
+    actions: Array.isArray(message.metadata?.actions)
+      ? message.metadata.actions
+      : [],
   })) as ChatMessage[];
 }

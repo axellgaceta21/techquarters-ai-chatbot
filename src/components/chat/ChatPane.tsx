@@ -31,6 +31,18 @@ export default function ChatPane() {
 
   if (!isOpen) return null;
 
+  const lastBookingActionIndex = messages.reduce((lastIndex, message, index) => {
+    if (
+      message.role === "assistant" &&
+      (message.actions?.some((action) => action.type === "booking_cta") ||
+        message.showBookingCta)
+    ) {
+      return index;
+    }
+
+    return lastIndex;
+  }, -1);
+
   return (
     <div
       className="chat-layer"
@@ -66,18 +78,32 @@ export default function ChatPane() {
               <div className="message-bubble">
                 <span>{message.content}</span>
                 {message.role === "assistant" &&
-                  message.showBookingCta &&
-                  index === messages.length - 1 && (
-                    <a
-                      className="button button-primary booking-cta"
-                      href={CALENDLY_URL}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={trackBookingClick}
-                    >
-                      <Icon name="calendar" /> Book a Strategy Call
-                    </a>
-                  )}
+                  index === lastBookingActionIndex &&
+                  (message.actions?.some((action) => action.type === "booking_cta") ||
+                    message.showBookingCta) &&
+                  (() => {
+                    const action = message.actions?.find(
+                      (item) => item.type === "booking_cta",
+                    );
+                    const href = action?.url || CALENDLY_URL;
+                    const label = action?.label || "Book a Strategy Call";
+
+                    return (
+                      <div className="booking-cta-card">
+                        {action?.helperText && <small>{action.helperText}</small>}
+                        <a
+                          className="button button-primary booking-cta"
+                          href={href}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label={`${label} on Calendly`}
+                          onClick={trackBookingClick}
+                        >
+                          <Icon name="calendar" /> {label}
+                        </a>
+                      </div>
+                    );
+                  })()}
               </div>
             </div>
           ))}

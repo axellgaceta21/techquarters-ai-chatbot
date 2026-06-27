@@ -6,6 +6,20 @@ import { DEFAULT_REPORTING_TIMEZONE, DISPLAY_TIMEZONE_BROWSER, TIMEZONE_OPTIONS,
 import { fetchDashboardData, getDashboardRange, rangeLabel, type DashboardData, type DashboardRange, type ScoreBucket } from "./dashboardService";
 
 const UNAUTHORIZED_MESSAGE = "This account does not have dashboard access.";
+const SESSION_EXPIRED_MESSAGE = "Your session expired. Please sign in again.";
+
+function isInvalidRefreshTokenError(error: unknown) {
+  const typedError = error as { message?: string; status?: number; __isAuthError?: boolean };
+  const message = (typedError.message || "").toLowerCase();
+  return typedError.status === 400 && message.includes("refresh") && message.includes("token")
+    || message.includes("invalid refresh token")
+    || message.includes("refresh token not found");
+}
+
+async function signOutLocally() {
+  const { error } = await supabase.auth.signOut({ scope: "local" });
+  if (error) console.warn("Local admin sign-out cleanup failed.", error);
+}
 const PAGE_TITLES = { dashboard: "Dashboard", pipeline: "Lead Pipeline", projects: "Projects", settings: "Settings" } as const;
 type PageKey = keyof typeof PAGE_TITLES;
 type LeadRow = Record<string, any> & { id: string; score: ScoreBucket; workflowStatus: string; calendlyStatus: string; bookingSource: string; tags: string[] };
@@ -242,13 +256,24 @@ export default function Dashboard() {
     return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [archivedOpen, archivedSelected.length, selectMode, selectedIds.length]);
 
-  const handleAuthError = useCallback(async (loadError: unknown) => {
-    const status = (loadError as Error & { status?: number }).status;
-    if (status === 401) navigate("/admin/login", { replace: true });
-    else if (status === 403) { await supabase.auth.signOut(); navigate("/admin/login", { replace: true, state: { message: UNAUTHORIZED_MESSAGE } }); }
-    else setError((loadError as Error).message || "Admin data could not be loaded.");
+  const handleExpiredAdminSession = useCallback(async () => {
+    setToken("");
+    setData(null);
+    setSources([]);
+    setLeads([]);
+    setConversations([]);
+    setError("");
+    sessionStorage.removeItem("tq-admin-logout");
+    await signOutLocally();
+    navigate("/admin/login", { replace: true, state: { message: SESSION_EXPIRED_MESSAGE } });
   }, [navigate]);
 
+  const handleAuthError = useCallback(async (loadError: unknown) => {
+    const status = (loadError as Error & { status?: number }).status;
+    if (status === 401 || isInvalidRefreshTokenError(loadError)) await handleExpiredAdminSession();
+    else if (status === 403) { await signOutLocally(); navigate("/admin/login", { replace: true, state: { message: UNAUTHORIZED_MESSAGE } }); }
+    else setError((loadError as Error).message || "Admin data could not be loaded.");
+  }, [handleExpiredAdminSession, navigate]);
   const displayTimezone = displayTimezonePreference === DISPLAY_TIMEZONE_BROWSER ? detectedTimezone : safeTimeZone(displayTimezonePreference, detectedTimezone);
 
   const loadDashboard = useCallback(async (nextToken = token, showLoading = true) => {
@@ -283,20 +308,38 @@ export default function Dashboard() {
   }, [conversationArchiveView, conversationSize, handleAuthError, scoreFilter, token]);
 
   useEffect(() => {
+    let isMounted = true;
     void (async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
-      if (!accessToken) { navigate("/admin/login", { replace: true }); return; }
-      setToken(accessToken);
+      setIsLoading(true);
       try {
-        const settings = await adminFetch<any>(accessToken, "/api/admin/settings");
-        if (settings.reporting_timezone) setReportingTimezone(safeTimeZone(settings.reporting_timezone));
-      } catch (settingsError) {
-        console.warn("Admin settings unavailable, using local timezone preferences.", settingsError);
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (!isMounted) return;
+        if (sessionError) {
+          if (isInvalidRefreshTokenError(sessionError)) await handleExpiredAdminSession();
+          else navigate("/admin/login", { replace: true, state: { message: SESSION_EXPIRED_MESSAGE } });
+          return;
+        }
+        const accessToken = sessionData.session?.access_token;
+        if (!accessToken) { navigate("/admin/login", { replace: true }); return; }
+        try {
+          const settings = await adminFetch<any>(accessToken, "/api/admin/settings");
+          if (settings.reporting_timezone && isMounted) setReportingTimezone(safeTimeZone(settings.reporting_timezone));
+        } catch (settingsError) {
+          if (!isMounted) return;
+          if ((settingsError as Error & { status?: number }).status === 401) await handleExpiredAdminSession();
+          else console.warn("Admin settings unavailable, using local timezone preferences.", settingsError);
+        }
+        if (isMounted) setToken(accessToken);
+      } catch (sessionError) {
+        if (!isMounted) return;
+        if (isInvalidRefreshTokenError(sessionError)) await handleExpiredAdminSession();
+        else navigate("/admin/login", { replace: true, state: { message: SESSION_EXPIRED_MESSAGE } });
+      } finally {
+        if (isMounted) setIsLoading(false);
       }
-      await Promise.all([loadDashboard(accessToken), loadLeads(accessToken), loadConversations(accessToken)]);
     })();
-  }, [loadConversations, loadDashboard, loadLeads, navigate]);
+    return () => { isMounted = false; };
+  }, [handleExpiredAdminSession, navigate]);
   useEffect(() => { if (token) void loadDashboard(token, false); }, [loadDashboard, range, reportingTimezone, token]);
   useEffect(() => { if (token) void loadLeads(token); }, [leadFilter, leadSearch, loadLeads, reportingTimezone, tagSearch, token]);
   useEffect(() => { if (token) void loadConversations(token); }, [scoreFilter, conversationSize, conversationArchiveView, loadConversations, token]);

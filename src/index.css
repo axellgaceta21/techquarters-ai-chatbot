@@ -456,3 +456,6 @@ p { color:var(--muted); line-height:1.75; }
     line-height:1.15!important;
   }
 }
+
+/* Public chatbot booking CTA card */
+.booking-cta-card{display:grid;gap:8px;margin-top:12px}.booking-cta-card small{color:#9aa8bd;font-size:.66rem;line-height:1.4}.booking-cta-card .booking-cta{position:static;width:100%;justify-content:center;font-size:.72rem;min-height:42px}

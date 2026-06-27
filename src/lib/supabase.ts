@@ -5,7 +5,17 @@ if (!appConfig.SUPABASE.URL || !appConfig.SUPABASE.ANON_KEY) {
   throw new Error("Supabase configuration is missing");
 }
 
-export const supabase = createClient(
+const createSupabaseClient = () => createClient(
   appConfig.SUPABASE.URL,
   appConfig.SUPABASE.ANON_KEY,
 );
+
+type SupabaseBrowserClient = ReturnType<typeof createSupabaseClient>;
+
+declare global {
+  var __tqSupabaseClient: SupabaseBrowserClient | undefined;
+}
+
+export const supabase: SupabaseBrowserClient = globalThis.__tqSupabaseClient ?? createSupabaseClient();
+
+globalThis.__tqSupabaseClient = supabase;
