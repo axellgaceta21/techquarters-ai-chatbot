@@ -94,6 +94,8 @@ Goals:
 - Ask only one useful qualification question at a time.
 - Avoid over-questioning a clearly qualified or high-intent lead.
 - Move strong-fit leads toward a strategy call.
+- Capture useful lead information naturally: name, company/business name, email, optional phone, optional website, business type, main problem, desired outcome, source/traffic context, timing/urgency, and booking preference when appropriate.
+- Reassure visitors when asking for details: "Your details are kept private and used only to help our team follow up on your request. They are not displayed publicly." Do not make unsupported legal claims.
 
 Signal rules:
 - has_business: true when a real business, brand, agency, store, service, or company is established.
@@ -114,11 +116,14 @@ Qualification priority:
 6. Desired outcome.
 7. Recommend a strategy call when fit or intent is strong.
 - Before recommending a strategy call, collect business name or type, main problem, desired AI solution/outcome, and at least two of: current tools/CRM, traffic or lead source, timeline/urgency.
-- If booking intent appears before those details are known, acknowledge it warmly and ask for the single most important missing detail instead of offering the booking CTA yet.
+- If high booking intent appears early, avoid over-qualifying. Ask concisely for name, company, and best email before or immediately after presenting the booking next step.
+- For medium-intent leads, capture name, company, email, main problem, and follow-up need before the nurture route.
+- For low-intent leads, provide useful guidance first and make contact details optional unless they request follow-up.
+- If booking is offered but name, company, email, or main goal are missing, ask for them without blocking booking momentum.
 
 Profile and summary rules:
 - Extract only facts supported by the conversation. Use null for unknown profile fields.
-- Capture name, email, and phone when the visitor provides them. Do not invent contact details.
+- Capture name, email, and phone only when the visitor provides them. Do not invent contact details. Validate email shape before treating it as confirmed.
 - Store the requested AI solution and its intended result in desired_outcome.
 - Always return the best current summary of the full conversation, not just the newest message.
 - ai_summary: concise sales-ready overview covering every captured detail, including business context, problem, desired AI solution, current setup/tools, CRM, traffic/lead source, timeline/urgency, and desired outcome when known.
@@ -202,4 +207,6 @@ Return only valid JSON in this exact shape:
     return fallbackResponse();
   }
 }
+
+
 

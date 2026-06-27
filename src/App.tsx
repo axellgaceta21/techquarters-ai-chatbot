@@ -9,6 +9,8 @@ import Services from "./pages/Services";
 import Systems from "./pages/Systems";
 import About from "./pages/About";
 import Contact from "./pages/Contact";
+import AdminLogin from "./pages/AdminLogin";
+import Dashboard from "./pages/Dashboard";
 
 function ScrollManager() {
   const { pathname } = useLocation();
@@ -17,22 +19,27 @@ function ScrollManager() {
 }
 
 function App() {
+  const { pathname } = useLocation();
+  const isAdminArea = pathname.startsWith("/admin") || pathname === "/dashboard";
+
   return (
     <div className="site-shell">
       <ScrollManager />
       <div className="ambient ambient-one" />
       <div className="ambient ambient-two" />
-      <Navbar />
+      {!isAdminArea ? <Navbar /> : null}
       <main><Routes>
           <Route path="/" element={<Home />} />
           <Route path="/services" element={<Services />} />
           <Route path="/systems" element={<Systems />} />
           <Route path="/about" element={<About />} />
           <Route path="/contact" element={<Contact />} />
+          <Route path="/admin/login" element={<AdminLogin />} />
+          <Route path="/dashboard" element={<Dashboard />} />
       </Routes></main>
-      <Footer />
-      <ChatLauncher />
-      <ChatPane />
+      {!isAdminArea ? <Footer /> : null}
+      {!isAdminArea ? <ChatLauncher /> : null}
+      {!isAdminArea ? <ChatPane /> : null}
     </div>
   );
 }

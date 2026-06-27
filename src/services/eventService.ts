@@ -1,5 +1,4 @@
 import { API_URLS } from "../config/appConfig";
-import { supabase } from "../lib/supabase";
 import type {
   ConversationSummary,
   LeadProfile,
@@ -11,6 +10,13 @@ export type AutomationEventType =
   | "conversation_summary_ready"
   | "booking_offered"
   | "booking_clicked";
+
+export type FunnelEventType =
+  | "landing_viewed"
+  | "conversation_started"
+  | "lead_created"
+  | "lead_qualified"
+  | "calendly_shown";
 
 export type AutomationEvent = {
   event_type: AutomationEventType;
@@ -25,6 +31,15 @@ export type AutomationEvent = {
   summary?: ConversationSummary;
 };
 
+export type FunnelEvent = {
+  event_type: FunnelEventType;
+  tenant_id: string;
+  lead_id: string;
+  session_id: string;
+  idempotency_key: string;
+  event_data?: Record<string, unknown>;
+};
+
 function buildAutomationPayload(event: AutomationEvent) {
   return {
     ...event,
@@ -36,29 +51,11 @@ function buildAutomationPayload(event: AutomationEvent) {
   };
 }
 
-export async function recordAndDispatchEvent(event: AutomationEvent) {
-  const payload = buildAutomationPayload(event);
-  const idempotencyKey =
-    event.event_type === "booking_clicked"
-      ? `${event.event_type}:${event.session_id}:${crypto.randomUUID()}`
-      : `${event.event_type}:${event.session_id}`;
-  const { error } = await supabase.from("funnel_events").upsert(
-    {
-      tenant_id: event.tenant_id,
-      lead_id: event.lead_id,
-      session_id: event.session_id,
-      event_type: event.event_type,
-      event_data: payload,
-      idempotency_key: idempotencyKey,
-    },
-    { onConflict: "idempotency_key", ignoreDuplicates: true },
-  );
+function automationIdempotencyKey(event: AutomationEvent) {
+  return `${event.event_type}:${event.session_id}`;
+}
 
-  if (error) {
-    console.error("Funnel event insert error:", error);
-    throw new Error(`Failed to save ${event.event_type}`);
-  }
-
+async function postEvent(payload: Record<string, unknown>, eventType: string) {
   const response = await fetch(API_URLS.events, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -66,8 +63,35 @@ export async function recordAndDispatchEvent(event: AutomationEvent) {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to dispatch ${event.event_type}`);
+    const errorBody = await response.json().catch(() => ({}));
+    console.error("Funnel event route error:", errorBody);
+    throw new Error(`Failed to save ${eventType}`);
   }
 
   return response.json() as Promise<{ success: boolean; forwarded: boolean }>;
+}
+
+export async function recordFunnelEvent(event: FunnelEvent) {
+  return postEvent(
+    {
+      ...(event.event_data || {}),
+      event_type: event.event_type,
+      tenant_id: event.tenant_id,
+      lead_id: event.lead_id,
+      session_id: event.session_id,
+      occurred_at: new Date().toISOString(),
+      idempotency_key: event.idempotency_key,
+    },
+    event.event_type,
+  );
+}
+
+export async function recordAndDispatchEvent(event: AutomationEvent) {
+  const payload = buildAutomationPayload(event);
+  const idempotencyKey = automationIdempotencyKey(event);
+
+  return postEvent(
+    { ...payload, idempotency_key: idempotencyKey },
+    event.event_type,
+  );
 }

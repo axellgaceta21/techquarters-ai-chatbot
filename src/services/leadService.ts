@@ -1,6 +1,11 @@
 import { supabase } from "../lib/supabase";
 import type { LeadProfile } from "../types/ai";
 
+function isValidEmail(value?: string | null) {
+  if (!value) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 export async function createLead(tenantId: string) {
   const { data, error } = await supabase
     .from("leads")
@@ -26,7 +31,7 @@ export async function updateLeadDetails(
 ) {
   const values = {
     name: profile.name,
-    email: profile.email,
+    email: isValidEmail(profile.email) ? profile.email : undefined,
     phone: profile.phone,
     business_name: profile.business_name,
     website: profile.website,
@@ -55,3 +60,5 @@ export async function updateLeadDetails(
 
   return data;
 }
+
+
