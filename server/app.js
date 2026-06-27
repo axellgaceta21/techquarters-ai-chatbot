@@ -3,6 +3,7 @@ import cors from "cors";
 import { env } from "./config/env.js";
 import chatRoutes from "./routes/chat.js";
 import eventRoutes from "./routes/events.js";
+import adminRoutes from "./routes/admin.js";
 
 const app = express();
 const PORT = env.PORT;
@@ -16,6 +17,7 @@ app.get("/", (req, res) => {
 
 app.use("/api/chat", chatRoutes);
 app.use("/api/events", eventRoutes);
+app.use("/api/admin", adminRoutes);
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

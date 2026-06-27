@@ -5,7 +5,7 @@ export function createAppConfig(environment = {}) {
   const apiBaseUrl =
     environment.VITE_API_BASE_URL ||
     environment.API_BASE_URL ||
-    (environment.DEV ? "http://localhost:3001" : "");
+    "";
 
   return Object.freeze({
     CALENDLY_URL:

@@ -9,7 +9,7 @@ import {
 import { TENANT_SLUG } from "../config/appConfig";
 import { askAI } from "../services/aiService";
 import { CALENDLY_URL, shouldOfferBooking } from "../services/bookingService";
-import { recordAndDispatchEvent } from "../services/eventService";
+import { recordAndDispatchEvent, recordFunnelEvent } from "../services/eventService";
 import { createLead, updateLeadDetails } from "../services/leadService";
 import {
   getMessagesBySession,
@@ -45,9 +45,32 @@ import { ChatContext } from "./chatContext";
 const WELCOME_MESSAGE: ChatMessage = {
   role: "assistant",
   content:
-    "Hi, welcome to TechQuarters AI. Tell us what you want to improve, automate, or build, and we’ll point you in the right direction.",
+    "Hi, welcome to TechQuarters AI. Tell us what you want to improve, automate, or build, and we'll point you in the right direction.",
 };
 const STORAGE_KEY = "tq-chatbot-state-v1";
+const VISITOR_KEY = "tq-anonymous-visitor-id";
+
+function getAnonymousVisitorId() {
+  const existing = localStorage.getItem(VISITOR_KEY);
+  if (existing) return existing;
+
+  const visitorId = crypto.randomUUID();
+  localStorage.setItem(VISITOR_KEY, visitorId);
+  return visitorId;
+}
+
+function visitorTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "Australia/Sydney";
+}
+
+function visitorDateKey() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: visitorTimeZone(),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
 
 type ChatIdentity = {
   tenantId: string;
@@ -69,6 +92,10 @@ type StoredChatState = {
   automation?: AutomationState;
   summaryEventSent?: boolean;
   bookingOfferedSent?: boolean;
+  landingViewedSent?: boolean;
+  conversationStartedSent?: boolean;
+  leadQualifiedSent?: boolean;
+  calendlyShownSent?: boolean;
 };
 
 function readStoredState(): StoredChatState {
@@ -131,6 +158,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const bookingOfferedSentRef = useRef(
     Boolean(storedState.bookingOfferedSent),
   );
+  const landingViewedSentRef = useRef(Boolean(storedState.landingViewedSent));
+  const conversationStartedSentRef = useRef(
+    Boolean(storedState.conversationStartedSent),
+  );
+  const leadQualifiedSentRef = useRef(Boolean(storedState.leadQualifiedSent));
+  const calendlyShownSentRef = useRef(Boolean(storedState.calendlyShownSent));
 
   const persistState = useCallback((nextMessages: ChatMessage[] = messages) => {
     localStorage.setItem(
@@ -141,6 +174,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         automation: automationRef.current,
         summaryEventSent: summaryEventSentRef.current,
         bookingOfferedSent: bookingOfferedSentRef.current,
+        landingViewedSent: landingViewedSentRef.current,
+        conversationStartedSent: conversationStartedSentRef.current,
+        leadQualifiedSent: leadQualifiedSentRef.current,
+        calendlyShownSent: calendlyShownSentRef.current,
       } satisfies StoredChatState),
     );
   }, [messages]);
@@ -161,6 +198,34 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         };
         identityRef.current = identity;
         persistState();
+
+        try {
+          const anonymousSessionId = getAnonymousVisitorId();
+          const dateKey = visitorDateKey();
+          const timezone = visitorTimeZone();
+          await recordFunnelEvent({
+            event_type: "lead_created",
+            tenant_id: identity.tenantId,
+            lead_id: identity.leadId,
+            session_id: identity.sessionId,
+            idempotency_key: `lead_created:${identity.leadId}`,
+            event_data: { anonymous_session_id: anonymousSessionId, visitor_timezone: timezone },
+          });
+
+          await recordFunnelEvent({
+            event_type: "landing_viewed",
+            tenant_id: identity.tenantId,
+            lead_id: identity.leadId,
+            session_id: identity.sessionId,
+            idempotency_key: `landing_viewed:${anonymousSessionId}:${dateKey}`,
+            event_data: { anonymous_session_id: anonymousSessionId, date_key: dateKey, visitor_timezone: timezone },
+          });
+          landingViewedSentRef.current = true;
+          persistState();
+        } catch (error) {
+          console.warn("Initial funnel event tracking failed:", error);
+        }
+
         return identity;
       } catch (error) {
         console.error("Chat persistence initialization failed:", error);
@@ -236,6 +301,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       await saveScoringSignals(identity.leadId, response.signals);
+
+      if (leadScore === "high" && !leadQualifiedSentRef.current) {
+        await recordFunnelEvent({
+          event_type: "lead_qualified",
+          tenant_id: identity.tenantId,
+          lead_id: identity.leadId,
+          session_id: identity.sessionId,
+          idempotency_key: `lead_qualified:${identity.leadId}:v1`,
+          event_data: { lead_score: leadScore, signals: response.signals },
+        });
+        leadQualifiedSentRef.current = true;
+        persistState();
+      }
+
+      if (offerBooking && !calendlyShownSentRef.current) {
+        await recordFunnelEvent({
+          event_type: "calendly_shown",
+          tenant_id: identity.tenantId,
+          lead_id: identity.leadId,
+          session_id: identity.sessionId,
+          idempotency_key: `calendly_shown:${identity.sessionId}`,
+          event_data: { booking_url: CALENDLY_URL, lead_score: leadScore },
+        });
+        calendlyShownSentRef.current = true;
+        persistState();
+      }
 
       if (summaryReady && !summaryEventSentRef.current) {
         let alreadySent = false;
@@ -314,7 +405,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       try {
         const identity = await initializeChat();
-        if (identity) await saveChatMessage(identity.sessionId, userMessage);
+        if (identity) {
+          await saveChatMessage(identity.sessionId, userMessage);
+          if (!conversationStartedSentRef.current) {
+            await recordFunnelEvent({
+              event_type: "conversation_started",
+              tenant_id: identity.tenantId,
+              lead_id: identity.leadId,
+              session_id: identity.sessionId,
+              idempotency_key: `conversation_started:${identity.sessionId}`,
+              event_data: { visitor_timezone: visitorTimeZone() },
+            });
+            conversationStartedSentRef.current = true;
+            persistState();
+          }
+        }
 
         const response = await askAI(conversation);
         const leadScore = calculateLeadScore(response.signals);
@@ -364,7 +469,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           {
             role: "assistant",
             content:
-              "I’m having trouble connecting right now. Please try again, or email hello@techquarters.ai.",
+              "I'm having trouble connecting right now. Please try again, or email hello@techquarters.ai.",
           },
         ]);
       } finally {
@@ -430,4 +535,3 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
-
