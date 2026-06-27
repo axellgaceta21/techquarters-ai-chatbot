@@ -32,6 +32,13 @@ export type ConversationSummary = {
   buying_intent?: string;
 };
 
+export type AIAction = {
+  type: "booking_cta";
+  label: string;
+  url: string;
+  helperText?: string;
+};
+
 export interface AIResponse {
   reply: string;
   stage: string;
@@ -39,4 +46,5 @@ export interface AIResponse {
   signals: LeadSignals;
   profile?: LeadProfile;
   summary?: ConversationSummary;
+  actions?: AIAction[];
 }

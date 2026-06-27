@@ -10,6 +10,7 @@ export function createAppConfig(environment = {}) {
   return Object.freeze({
     CALENDLY_URL:
       environment.VITE_CALENDLY_URL ||
+      environment.CALENDLY_BOOKING_URL ||
       environment.CALENDLY_URL ||
       DEFAULT_CALENDLY_URL,
     TENANT_SLUG:
@@ -31,3 +32,4 @@ export function createAppConfig(environment = {}) {
     N8N_WEBHOOK_URL: environment.N8N_WEBHOOK_URL || "",
   });
 }
+

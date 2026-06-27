@@ -44,23 +44,47 @@ async function persistFunnelEvent(event) {
 
   const supabase = getSupabaseAdminClient();
   const idempotencyKey = defaultIdempotencyKey(event);
-  const { error } = await supabase.from("funnel_events").upsert(
-    {
-      tenant_id: event.tenant_id,
-      lead_id: event.lead_id,
-      session_id: event.session_id,
-      event_type: event.event_type,
-      event_data: { ...event, idempotency_key: idempotencyKey },
-      idempotency_key: idempotencyKey,
-    },
-    { onConflict: "idempotency_key", ignoreDuplicates: true },
-  );
+  const logContext = {
+    event_type: event.event_type,
+    lead_id: event.lead_id,
+    session_id: event.session_id,
+    idempotency_key: idempotencyKey,
+  };
+
+  const { data: existing, error: lookupError } = await supabase
+    .from("funnel_events")
+    .select("id")
+    .eq("idempotency_key", idempotencyKey)
+    .maybeSingle();
+
+  if (lookupError) {
+    console.error("Funnel event idempotency lookup failed:", {
+      ...logContext,
+      code: lookupError.code,
+      message: lookupError.message,
+      details: lookupError.details,
+      hint: lookupError.hint,
+    });
+    throw lookupError;
+  }
+
+  if (existing) {
+    console.info("Funnel event duplicate skipped:", logContext);
+    return { ...event, idempotency_key: idempotencyKey, duplicate: true };
+  }
+
+  const { error } = await supabase.from("funnel_events").insert({
+    tenant_id: event.tenant_id,
+    lead_id: event.lead_id,
+    session_id: event.session_id,
+    event_type: event.event_type,
+    event_data: { ...event, idempotency_key: idempotencyKey },
+    idempotency_key: idempotencyKey,
+  });
 
   if (error) {
-    console.error("Funnel event service-role upsert failed:", {
-      event_type: event.event_type,
-      lead_id: event.lead_id,
-      session_id: event.session_id,
+    console.error("Funnel event service-role insert failed:", {
+      ...logContext,
       code: error.code,
       message: error.message,
       details: error.details,
@@ -69,7 +93,8 @@ async function persistFunnelEvent(event) {
     throw error;
   }
 
-  return { ...event, idempotency_key: idempotencyKey };
+  console.info("Funnel event persisted:", logContext);
+  return { ...event, idempotency_key: idempotencyKey, duplicate: false };
 }
 
 async function persistBookingCompleted(event) {
@@ -123,14 +148,22 @@ export async function handleEventsRequest(req, res) {
 
   try {
     const event = req.body || {};
+    console.info("Event received:", {
+      event_type: event.event_type,
+      lead_id: event.lead_id,
+      session_id: event.session_id,
+      idempotency_key: event.idempotency_key,
+    });
 
     if (!event.event_type || !event.lead_id || !event.session_id) {
+      console.warn("Event validation failure:", { reason: "missing required identity", event_type: event.event_type });
       return res.status(400).json({
         error: "event_type, lead_id, and session_id are required",
       });
     }
 
     if (!event.tenant_id) {
+      console.warn("Event validation failure:", { reason: "tenant_id is required", event_type: event.event_type });
       return res.status(400).json({ error: "tenant_id is required" });
     }
 
@@ -140,13 +173,35 @@ export async function handleEventsRequest(req, res) {
         : await persistFunnelEvent(event);
 
     if (!FORWARDED_EVENTS.has(payload.event_type)) {
-      return res.json({ success: true, forwarded: false });
+      return res.json({ success: true, forwarded: false, duplicate: Boolean(payload.duplicate) });
     }
 
+    if (payload.duplicate) {
+      console.info("n8n dispatch skipped for duplicate event:", {
+        event_type: payload.event_type,
+        lead_id: payload.lead_id,
+        session_id: payload.session_id,
+        idempotency_key: payload.idempotency_key,
+      });
+      return res.json({ success: true, forwarded: false, duplicate: true });
+    }
+
+    console.info("n8n dispatch attempted:", {
+      event_type: payload.event_type,
+      lead_id: payload.lead_id,
+      session_id: payload.session_id,
+      idempotency_key: payload.idempotency_key,
+    });
     await sendToN8n(payload);
-    return res.json({ success: true, forwarded: true });
+    console.info("n8n dispatch success:", {
+      event_type: payload.event_type,
+      lead_id: payload.lead_id,
+      session_id: payload.session_id,
+      idempotency_key: payload.idempotency_key,
+    });
+    return res.json({ success: true, forwarded: true, duplicate: false });
   } catch (error) {
-    console.error("Event route error:", {
+    console.error("n8n dispatch failure or event route error:", {
       message: error.message,
       code: error.code,
       details: error.details,
@@ -157,3 +212,4 @@ export async function handleEventsRequest(req, res) {
     });
   }
 }
+

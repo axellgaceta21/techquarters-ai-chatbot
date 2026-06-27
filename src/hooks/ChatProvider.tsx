@@ -30,6 +30,7 @@ import {
 } from "../services/sessionMetaService";
 import { createChatSession } from "../services/sessionService";
 import {
+  hasMeaningfulSummary,
   isConversationSummaryReady,
   updateConversationSummary,
 } from "../services/summaryService";
@@ -96,6 +97,7 @@ type StoredChatState = {
   conversationStartedSent?: boolean;
   leadQualifiedSent?: boolean;
   calendlyShownSent?: boolean;
+  bookingClickedSent?: boolean;
 };
 
 function readStoredState(): StoredChatState {
@@ -132,6 +134,55 @@ function mergeSummary(
   );
 }
 
+function hasProfileContext(profile: LeadProfile) {
+  return Boolean(
+    profile.business_name ||
+      profile.industry ||
+      profile.biggest_problem ||
+      profile.desired_outcome,
+  );
+}
+
+function isNotificationSummaryReady(
+  profile: LeadProfile,
+  summary: ConversationSummary,
+  leadScore: LeadScore,
+  response: Awaited<ReturnType<typeof askAI>>,
+) {
+  return Boolean(
+    isConversationSummaryReady(profile, summary) ||
+      (hasMeaningfulSummary(summary) &&
+        hasProfileContext(profile) &&
+        (leadScore === "high" ||
+          response.booking_offered ||
+          response.stage === "booking" ||
+          response.signals.wants_to_book)),
+  );
+}
+
+function stripCalendlyUrls(text: string) {
+  return text
+    .replace(/https:\/\/calendly\.com\/[^\s)]+/gi, "the booking button below")
+    .replace(/\s+\./g, ".")
+    .trim();
+}
+
+function bookingActions(offerBooking: boolean, response: Awaited<ReturnType<typeof askAI>>) {
+  if (!offerBooking) return [];
+  const action = response.actions?.find(
+    (item) => item.type === "booking_cta" && typeof item.url === "string",
+  );
+
+  return [
+    {
+      type: "booking_cta" as const,
+      label: action?.label || "Book a Strategy Call",
+      url: CALENDLY_URL,
+      helperText: action?.helperText || "Choose a time that works for you.",
+    },
+  ];
+}
+
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [storedState] = useState(readStoredState);
   const [isOpen, setIsOpen] = useState(false);
@@ -164,6 +215,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
   const leadQualifiedSentRef = useRef(Boolean(storedState.leadQualifiedSent));
   const calendlyShownSentRef = useRef(Boolean(storedState.calendlyShownSent));
+  const bookingClickedSentRef = useRef(Boolean(storedState.bookingClickedSent));
 
   const persistState = useCallback((nextMessages: ChatMessage[] = messages) => {
     localStorage.setItem(
@@ -178,6 +230,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         conversationStartedSent: conversationStartedSentRef.current,
         leadQualifiedSent: leadQualifiedSentRef.current,
         calendlyShownSent: calendlyShownSentRef.current,
+        bookingClickedSent: bookingClickedSentRef.current,
       } satisfies StoredChatState),
     );
   }, [messages]);
@@ -262,7 +315,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const openChat = useCallback(() => {
     setIsOpen(true);
     void initializeChat();
-  }, [initializeChat]);
+  }, [initializeChat, persistState]);
   const closeChat = useCallback(() => setIsOpen(false), []);
 
   const processAutomation = useCallback(
@@ -280,7 +333,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         automationRef.current.summary,
         response.summary,
       );
-      const summaryReady = isConversationSummaryReady(profile, summary);
+      const summaryReady = isNotificationSummaryReady(
+        profile,
+        summary,
+        leadScore,
+        response,
+      );
 
       automationRef.current = {
         profile,
@@ -296,7 +354,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         await updateLeadDetails(identity.leadId, profile);
       }
 
-      if (summaryReady) {
+      if (hasMeaningfulSummary(summary)) {
         await updateConversationSummary(identity.sessionId, summary);
       }
 
@@ -366,11 +424,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         summaryEventSentRef.current &&
         !bookingOfferedSentRef.current
       ) {
-        const meta = await getSessionMeta(identity.sessionId);
-        if (!meta.summary_notification_sent) {
-          throw new Error(
-            "Booking event blocked until the summary notification is sent",
-          );
+        try {
+          const meta = await getSessionMeta(identity.sessionId);
+          if (!meta.summary_notification_sent) {
+            console.warn("Booking offer continuing after summary event dispatch before metadata flag was visible", {
+              lead_id: identity.leadId,
+              session_id: identity.sessionId,
+            });
+          }
+        } catch (error) {
+          console.warn("Booking offer metadata gate unavailable after summary dispatch:", error);
         }
 
         await recordAndDispatchEvent({
@@ -434,15 +497,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         );
         const offerBooking =
           bookingRequested &&
-          isConversationSummaryReady(mergedProfile, mergedSummary);
+          isNotificationSummaryReady(
+            mergedProfile,
+            mergedSummary,
+            leadScore,
+            response,
+          );
+        const actions = bookingActions(offerBooking, response);
+        const reply = response.reply ||
+          "Thanks. What outcome would make this project a success?";
         const assistantMessage: ChatMessage = {
           role: "assistant",
-          content:
-            response.reply ||
-            "Thanks. What outcome would make this project a success?",
+          content: offerBooking
+            ? stripCalendlyUrls(reply) || "You can book a call using the button below."
+            : reply,
           stage: response.stage,
           signals: response.signals,
-          showBookingCta: offerBooking,
+          showBookingCta: actions.length > 0,
+          actions,
         };
         const nextMessages = [...conversation, assistantMessage];
         setMessages(nextMessages);
@@ -487,6 +559,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const trackBookingClick = useCallback(() => {
     void (async () => {
+      if (bookingClickedSentRef.current) return;
       const identity = await initializeChat();
       if (!identity) return;
 
@@ -498,16 +571,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         lead_id: identity.leadId,
         session_id: identity.sessionId,
         booking_url: CALENDLY_URL,
+        booking_source: "chatbot_booking_cta",
         ai_stage: state.stage,
         lead_score: state.leadScore,
         signals: state.signals,
         profile: state.profile,
         summary: state.summary,
       });
+      bookingClickedSentRef.current = true;
+      persistState();
     })().catch((error) =>
       console.error("Booking click event failed:", error),
     );
-  }, [initializeChat]);
+  }, [initializeChat, persistState]);
 
   const value = useMemo(
     () => ({
@@ -535,3 +611,5 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
+
+
