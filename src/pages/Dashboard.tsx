@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Icon from "../components/ui/Icon";
 import { supabase } from "../lib/supabase";
@@ -24,6 +24,7 @@ const PAGE_TITLES = { dashboard: "Dashboard", pipeline: "Lead Pipeline", project
 type PageKey = keyof typeof PAGE_TITLES;
 type LeadRow = Record<string, any> & { id: string; score: ScoreBucket; workflowStatus: string; calendlyStatus: string; bookingSource: string; tags: string[] };
 type ConversationRow = Record<string, any> & { id: string; leadId?: string; score: ScoreBucket; workflowStatus: string; calendlyStatus: string; summary?: string; archivedAt?: string | null };
+type LeadDetailState = Record<string, any> & { session: Record<string, any>; lead: Record<string, any>; isLoadingDetails?: boolean; detailError?: string };
 
 function pct(value: number) { return `${value.toFixed(value % 1 ? 1 : 0)}%`; }
 function dateTime(value?: string | null, timeZone = browserTimeZone()) { return formatDateTime(value, timeZone); }
@@ -41,6 +42,36 @@ const BOOKING_OPTIONS = ["Not Shown", "Booking Offered", "Booking Clicked", "Con
 const PROJECT_STAGE_OPTIONS = ["Not Started", "Discovery", "Planning", "Building", "Review", "Live", "On Hold", "Completed"];
 const CONTRACT_STATUS_OPTIONS = ["Pending", "Signed", "Not Required", "Cancelled"];
 function normalizeTags(value: unknown) { return Array.isArray(value) ? value.map(String).filter(Boolean) : []; }
+function warnMalformedSources(value: unknown) {
+  if (import.meta.env.DEV) console.warn("[Dashboard] malformed sources response. Rendering sources as empty only.", value);
+}
+function parseSourcesString(value: string): unknown {
+  try { return JSON.parse(value); }
+  catch { warnMalformedSources(value); return []; }
+}
+function isSourceLike(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  return ["source", "leads", "high", "medium", "low", "calendlyShown", "clicked", "confirmedBooked", "qualifiedRate", "bookedRate"].some((key) => key in value);
+}
+function normalizeSources(value: unknown): Record<string, any>[] {
+  if (Array.isArray(value)) return value.filter((item) => {
+    const valid = isSourceLike(item);
+    if (!valid) warnMalformedSources(item);
+    return valid;
+  }) as Record<string, any>[];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? normalizeSources(parseSourcesString(trimmed)) : [];
+  }
+  if (isSourceLike(value)) return [value as Record<string, any>];
+  if (value == null) return [];
+  warnMalformedSources(value);
+  return [];
+}
+function safeSourceNumber(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
 function tagsFromInput(value: string) { return value.split(",").map((tag) => tag.trim()).filter(Boolean); }
 function bookingDraftStatus(detailOrLead: any) { return bookingDetailStatus(detailOrLead?.calendlyStatus || detailOrLead?.calendly_status); }
 
@@ -61,6 +92,28 @@ function scoreLevel(value: unknown) {
   return "Low (" + numeric + ")";
 }
 
+function leadDetailShell(row: ConversationRow): LeadDetailState {
+  const lead = row.lead || {};
+  return {
+    session: {
+      id: row.id,
+      lead_id: row.leadId,
+      ai_summary: row.summary,
+      last_message_at: row.lastActivity,
+      archived_at: row.archivedAt,
+    },
+    lead,
+    score: row.score,
+    workflowStatus: row.workflowStatus,
+    calendlyStatus: row.calendlyStatus,
+    bookingSource: row.bookingSource,
+    messages: [],
+    signals: [],
+    funnelEvents: [],
+    activity: [],
+    isLoadingDetails: true,
+  };
+}
 function bookingUpdates(status: string) {
   if (status === "Manually Marked Booked" || status === "Confirmed Booked") return { manually_booked: true, booking_source: status === "Confirmed Booked" ? "Manual Admin Update" : "Manual Admin Update" };
   if (status === "Booking Offered") return { manually_booked: false, calendly_booked: false, booked_at: null, booking_source: "Manual Admin Booking Offered" };
@@ -98,9 +151,19 @@ function QualificationSummary({ signals, score }: { signals: any[]; score: strin
   return <article className="modal-messages qualification-summary"><h3>Qualification Summary</h3><div className="qualification-grid"><span>Has business</span><b>{yesNo(signal.has_business)}</b><span>Has traffic or spend</span><b>{yesNo(signal.has_traffic_or_spend)}</b><span>Problem clarity</span><b>{scoreLevel(signal.problem_clarity)}</b><span>Urgency</span><b>{scoreLevel(signal.urgency)}</b><span>Wants to book</span><b>{yesNo(signal.wants_to_book)}</b><span>Final score</span><b><span className={`qualification-final-score ${scoreClass(score)}`}>{score}</span></b></div>{signal.score_reason ? <p className="qualification-reason"><b>Score reason:</b> {signal.score_reason}</p> : null}</article>;
 }
 
-function LeadDetailModal({ detail, displayTimezone, onClose, onUpdate, onMoveToProjects, onArchive, onDelete }: { detail: any; displayTimezone: string; onClose: () => void; onUpdate: (id: string, updates: Record<string, unknown>) => Promise<void>; onMoveToProjects: (id: string, updates: Record<string, unknown>) => Promise<void>; onArchive: () => void; onDelete: () => void }) {
+function DetailLoading({ label }: { label: string }) {
+  return <div className="detail-section-loading"><div className="skeleton detail-skeleton-line" /><p>{label}</p></div>;
+}
+
+function DetailError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div className="detail-section-error"><p>{message}</p><button className="button button-secondary compact-action" type="button" onClick={onRetry}>Retry</button></div>;
+}
+
+function LeadDetailModal({ detail, displayTimezone, onClose, onUpdate, onMoveToProjects, onArchive, onDelete, onRetry }: { detail: LeadDetailState; displayTimezone: string; onClose: () => void; onUpdate: (id: string, updates: Record<string, unknown>) => Promise<void>; onMoveToProjects: (id: string, updates: Record<string, unknown>) => Promise<void>; onArchive: () => void; onDelete: () => void; onRetry: () => void }) {
   const lead = detail.lead || {};
   const isAlreadyProject = Boolean(lead.completed_at) || detail.workflowStatus === "Completed";
+  const detailsLoading = Boolean(detail.isLoadingDetails);
+  const detailError = detail.detailError || "";
   const [draft, setDraft] = useState({
     name: lead.name || "",
     email: lead.email || "",
@@ -174,12 +237,12 @@ function LeadDetailModal({ detail, displayTimezone, onClose, onUpdate, onMoveToP
           <article><h3>Read-only Profile</h3><p>Website: {lead.website || "Not captured"}</p><p>Main problem: {lead.main_problem || "Not captured"}</p><p>Desired outcome: {lead.desired_outcome || "Not captured"}</p><p>Owner: {lead.owner_name || "Unassigned"}</p><p>Follow-up due: {dateOnly(lead.follow_up_due_date)}</p></article>
           <article className="detail-form-card"><h3>Editable Lead Contact</h3><label><span>Name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label><span>Email</span><input value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} /></label><label><span>Business</span><input value={draft.business_name} onChange={(event) => setDraft({ ...draft, business_name: event.target.value })} /></label><label><span>Phone</span><input value={draft.phone} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} /></label><label><span>Score</span><select value={draft.lead_score} onChange={(event) => setDraft({ ...draft, lead_score: event.target.value as ScoreBucket })}>{SCORE_OPTIONS.map((item) => <option key={item} value={item}>{item === "unscored" ? "Unscored" : item[0].toUpperCase() + item.slice(1)}</option>)}</select></label><label><span>Booking</span><select value={draft.booking_status} onChange={(event) => setDraft({ ...draft, booking_status: event.target.value })}>{BOOKING_OPTIONS.map((item) => <option key={item}>{item}</option>)}</select></label><label><span>Tags</span><input value={draft.tags} placeholder="proposal, urgent" onChange={(event) => setDraft({ ...draft, tags: event.target.value })} /></label></article>
           <article><h3>Booking Truth</h3><p>Status: {bookingDetailStatus(detail.calendlyStatus)}</p><p>Booking source: {detail.bookingSource}</p><p>Booking time: {dateTime(lead.booking_datetime || lead.booked_at, displayTimezone)}</p><p>Manual edits are saved as lead updates and do not create Calendly events.</p></article>
-          <article><h3>Activity Timeline</h3>{[...(detail.activity || []), ...(detail.funnelEvents || [])].slice(0, 12).length ? [...(detail.activity || []), ...(detail.funnelEvents || [])].slice(0, 12).map((event: any) => <p key={`${event.id}-${event.created_at}`}><b>{event.event_type}</b><br />{dateTime(event.created_at, displayTimezone)}</p>) : <p>No activity yet.</p>}</article>
+          <article><h3>Activity Timeline</h3>{detailError ? <DetailError message="Booking activity could not be loaded." onRetry={onRetry} /> : detailsLoading ? <DetailLoading label="Loading booking activity..." /> : [...(detail.activity || []), ...(detail.funnelEvents || [])].slice(0, 12).length ? [...(detail.activity || []), ...(detail.funnelEvents || [])].slice(0, 12).map((event: any) => <p key={`${event.id}-${event.created_at}`}><b>{event.event_type}</b><br />{dateTime(event.created_at, displayTimezone)}</p>) : <p>No activity yet.</p>}</article>
         </div>
         <article className="modal-messages notes-card"><h3>Notes</h3><div className="notes-grid"><label><span>Admin Notes</span><textarea value={draft.internal_notes} onChange={(event) => setDraft({ ...draft, internal_notes: event.target.value })} /></label><label><span>Booking Notes</span><textarea value={draft.booking_notes} onChange={(event) => setDraft({ ...draft, booking_notes: event.target.value })} /></label></div></article>
         <article className="modal-messages"><h3>Project Tracking</h3><div className="project-grid"><input placeholder="Project name" value={draft.project_name} onChange={(event) => setDraft({ ...draft, project_name: event.target.value })} /><select className={`stage-select ${stageClass(draft.project_stage)}`} value={draft.project_stage} onChange={(event) => setDraft({ ...draft, project_stage: event.target.value })}>{PROJECT_STAGE_OPTIONS.map((item) => <option key={item}>{item}</option>)}</select><select value={draft.contract_status} onChange={(event) => setDraft({ ...draft, contract_status: event.target.value })}>{CONTRACT_STATUS_OPTIONS.map((item) => <option key={item}>{item}</option>)}</select><label><span>From</span><input type="date" value={draft.project_start_date} onChange={(event) => setDraft({ ...draft, project_start_date: event.target.value })} /></label><label><span>To</span><input type="date" value={draft.target_completion_date} onChange={(event) => setDraft({ ...draft, target_completion_date: event.target.value })} /></label><textarea placeholder="Timeline / milestones" value={draft.project_timeline} onChange={(event) => setDraft({ ...draft, project_timeline: event.target.value })} /><textarea placeholder="Project summary" value={draft.project_summary} onChange={(event) => setDraft({ ...draft, project_summary: event.target.value })} /></div></article>
-        <article className="modal-messages"><h3>Recent Chat Messages</h3>{detail.messages?.length ? detail.messages.map((message: any) => <p key={message.id}><b>{message.role}:</b> {message.content}</p>) : <p>No messages found.</p>}</article>
-        <QualificationSummary signals={detail.signals || []} score={draft.lead_score} />
+        <article className="modal-messages"><h3>Recent Chat Messages</h3>{detailError ? <DetailError message="Conversation details could not be loaded." onRetry={onRetry} /> : detailsLoading ? <DetailLoading label="Loading conversation details..." /> : detail.messages?.length ? detail.messages.map((message: any) => <p key={message.id}><b>{message.role}:</b> {message.content}</p>) : <p>No messages found.</p>}</article>
+        {detailError ? <article className="modal-messages qualification-summary"><h3>Qualification Summary</h3><DetailError message="Qualification details could not be loaded." onRetry={onRetry} /></article> : detailsLoading ? <article className="modal-messages qualification-summary"><h3>Qualification Summary</h3><DetailLoading label="Loading qualification details..." /></article> : <QualificationSummary signals={detail.signals || []} score={draft.lead_score} />}
       </div>
       <div className="admin-modal-footer"><button className="button button-secondary" type="button" disabled={isAlreadyProject || saving} onClick={() => void moveToProjects()}>{isAlreadyProject ? "Already in Projects" : "Move to Projects"}</button><span className="modal-footer-spacer" /><button className="button button-secondary compact-action" type="button" onClick={onArchive}>Archive</button><button className="button button-secondary compact-action danger" type="button" onClick={onDelete}>Delete</button></div>
     </section>
@@ -188,7 +251,10 @@ function LeadDetailModal({ detail, displayTimezone, onClose, onUpdate, onMoveToP
 export default function Dashboard() {
   const navigate = useNavigate();
   const [token, setToken] = useState("");
-  const [activePage, setActivePage] = useState<PageKey>("dashboard");
+  const [activePage, setActivePage] = useState<PageKey>(() => {
+    const storedPage = localStorage.getItem("tq-admin-active-page") as PageKey | null;
+    return storedPage && storedPage in PAGE_TITLES ? storedPage : "dashboard";
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("tq-admin-theme") || "dark");
@@ -211,7 +277,7 @@ export default function Dashboard() {
   const [assignees, setAssignees] = useState<string[]>(() => JSON.parse(localStorage.getItem("tq-admin-assignees") || "[\"Axell\",\"Kaan\"]"));
   const [newAssignee, setNewAssignee] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [detail, setDetail] = useState<any | null>(null);
+  const [detail, setDetail] = useState<LeadDetailState | null>(null);
   const [projectDetail, setProjectDetail] = useState<LeadRow | null>(null);
   const [projectView, setProjectView] = useState<"ongoing" | "completed">("ongoing");
   const [archivedOpen, setArchivedOpen] = useState(false);
@@ -221,6 +287,11 @@ export default function Dashboard() {
   const [refreshingPage, setRefreshingPage] = useState<PageKey | null>(null);
   const [feedback, setFeedback] = useState("");
   const [error, setError] = useState("");
+  const feedbackTimer = useRef<number | null>(null);
+  const detailCacheRef = useRef<Map<string, LeadDetailState>>(new Map());
+  const detailRequestsRef = useRef<Map<string, number>>(new Map());
+  const detailRequestSeq = useRef(0);
+  const selectedDetailSessionIdRef = useRef<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [leadSummary, setLeadSummary] = useState({ filteredCount: 0, totalLeadCount: 0, needingActionToday: 0 });
 
@@ -234,7 +305,21 @@ export default function Dashboard() {
   useEffect(() => { localStorage.setItem("tq-admin-assignees", JSON.stringify(assignees)); }, [assignees]);
   useEffect(() => { localStorage.setItem("tq-admin-display-timezone", displayTimezonePreference); }, [displayTimezonePreference]);
   useEffect(() => { localStorage.setItem("tq-admin-reporting-timezone", reportingTimezone); }, [reportingTimezone]);
-  useEffect(() => { if (feedback === "Saved." || feedback === "Selection cleared.") { const timer = window.setTimeout(() => setFeedback(""), 3000); return () => window.clearTimeout(timer); } }, [feedback]);
+  useEffect(() => { localStorage.setItem("tq-admin-active-page", activePage); }, [activePage]);
+  useEffect(() => {
+    if (feedbackTimer.current) window.clearTimeout(feedbackTimer.current);
+    if (!feedback || feedback === "Saving...") return;
+    feedbackTimer.current = window.setTimeout(() => {
+      setFeedback("");
+      feedbackTimer.current = null;
+    }, 3000);
+    return () => {
+      if (feedbackTimer.current) {
+        window.clearTimeout(feedbackTimer.current);
+        feedbackTimer.current = null;
+      }
+    };
+  }, [feedback]);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape" || isEditableTarget(event.target)) return;
@@ -282,11 +367,21 @@ export default function Dashboard() {
     setError("");
     try {
       const dashboardData = await fetchDashboardData(nextToken, range, reportingTimezone);
+      setData(dashboardData);
+      setLastUpdated(new Date().toISOString());
+
       const { start, end, timeZone } = getDashboardRange(range, reportingTimezone);
-      const sourceData = await adminFetch<any[]>(nextToken, `/api/admin/sources?${new URLSearchParams({ start, end, timeZone })}`);
-      setData(dashboardData); setSources(sourceData); setLastUpdated(new Date().toISOString());
-    } catch (loadError) { await handleAuthError(loadError); }
-    finally { setIsLoading(false); }
+      try {
+        const sourceData = await adminFetch<unknown>(nextToken, `/api/admin/sources?${new URLSearchParams({ start, end, timeZone })}`);
+        setSources(normalizeSources(sourceData));
+      } catch (sourceError) {
+        if (import.meta.env.DEV) console.error("[Dashboard] sources load error:", sourceError);
+        setSources([]);
+      }
+    } catch (loadError) {
+      if (import.meta.env.DEV) console.error("[Dashboard] load error:", loadError);
+      await handleAuthError(loadError);
+    } finally { setIsLoading(false); }
   }, [handleAuthError, range, reportingTimezone, token]);
 
   const loadLeads = useCallback(async (nextToken = token) => {
@@ -346,11 +441,73 @@ export default function Dashboard() {
   useEffect(() => { if (token && activePage === "projects") { setLeadFilter("completed"); } }, [activePage, token]);
 
   async function logout() { await supabase.auth.signOut(); sessionStorage.setItem("tq-admin-logout", "1"); navigate("/admin/login?logged_out=1", { replace: true, state: { loggedOut: true } }); }
+  async function loadDetailInBackground(sessionId: string, requestId: number) {
+    if (!token || detailRequestsRef.current.has(sessionId)) return;
+    detailRequestsRef.current.set(sessionId, requestId);
+    try {
+      const loaded = await adminFetch<LeadDetailState>(token, `/api/admin/conversation-detail?id=${encodeURIComponent(sessionId)}`);
+      const nextDetail = { ...loaded, isLoadingDetails: false, detailError: "" };
+      detailCacheRef.current.set(sessionId, nextDetail);
+      if (selectedDetailSessionIdRef.current === sessionId && detailRequestSeq.current === requestId) setDetail(nextDetail);
+    } catch (loadError) {
+      if ((loadError as Error & { status?: number }).status === 401 || isInvalidRefreshTokenError(loadError)) {
+        await handleAuthError(loadError);
+        return;
+      }
+      if (import.meta.env.DEV) console.error("[Dashboard] lead detail load error:", loadError);
+      if (selectedDetailSessionIdRef.current === sessionId && detailRequestSeq.current === requestId) {
+        setDetail((current) => {
+          if (!current || current.session.id !== sessionId) return current;
+          return { ...current, isLoadingDetails: false, detailError: "Lead details could not be loaded." };
+        });
+      }
+    } finally {
+      if (detailRequestsRef.current.get(sessionId) === requestId) detailRequestsRef.current.delete(sessionId);
+    }
+  }
+
+  function openDetail(row: ConversationRow) {
+    if (!token) return;
+    selectedDetailSessionIdRef.current = row.id;
+    const cached = detailCacheRef.current.get(row.id);
+    const existingRequestId = detailRequestsRef.current.get(row.id);
+    const requestId = existingRequestId || ++detailRequestSeq.current;
+    detailRequestSeq.current = requestId;
+    setDetail(cached || leadDetailShell(row));
+    if (!cached && !existingRequestId) void loadDetailInBackground(row.id, requestId);
+  }
+
+  function retryDetailLoad() {
+    const sessionId = detail?.session?.id;
+    if (!sessionId || !token) return;
+    const requestId = ++detailRequestSeq.current;
+    selectedDetailSessionIdRef.current = sessionId;
+    detailCacheRef.current.delete(sessionId);
+    setDetail((current) => {
+      if (!current || current.session.id !== sessionId) return current;
+      return { ...current, isLoadingDetails: true, detailError: "" };
+    });
+    void loadDetailInBackground(sessionId, requestId);
+  }
+
+  function updateCachedLead(id: string, saved: LeadRow) {
+    for (const [sessionId, cached] of detailCacheRef.current) {
+      if (cached.lead?.id === id) {
+        detailCacheRef.current.set(sessionId, { ...cached, lead: { ...cached.lead, ...saved }, score: scoreBucket(saved.lead_score), calendlyStatus: saved.calendlyStatus || cached.calendlyStatus, bookingSource: saved.bookingSource || cached.bookingSource });
+      }
+    }
+  }
+
+  function invalidateDetailCache(sessionIds: string[]) {
+    for (const sessionId of sessionIds) detailCacheRef.current.delete(sessionId);
+  }
+
   async function updateLead(id: string, updates: Record<string, unknown>) {
     if (!token) return;
     setFeedback("Saving...");
     try {
       const saved = await adminFetch<LeadRow>(token, `/api/admin/leads?id=${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(updates) });
+      updateCachedLead(id, saved);
       setFeedback("Saved.");
       await loadLeads();
       if (detail?.lead?.id === id) setDetail({ ...detail, lead: { ...detail.lead, ...saved }, score: scoreBucket(saved.lead_score), calendlyStatus: saved.calendlyStatus || detail.calendlyStatus, bookingSource: saved.bookingSource || detail.bookingSource });
@@ -368,14 +525,13 @@ export default function Dashboard() {
     setProjectView("ongoing");
     setFeedback("Saved.");
   }
-  async function openDetail(sessionId: string) { if (!token) return; setDetail(await adminFetch(token, `/api/admin/conversation-detail?id=${encodeURIComponent(sessionId)}`)); }
   async function openArchivedData() { if (!token) return; const result = await adminFetch<any>(token, `/api/admin/conversations?${new URLSearchParams({ score: "all", pageSize: "all", archived: "archived" })}`); setArchivedRows(result.rows || []); setArchivedSelected([]); setArchivedOpen(true); }
-  async function archiveSelected(archived: boolean, ids = selectedIds) { if (!token || !ids.length) return; await adminFetch(token, "/api/admin/conversations", { method: "PATCH", body: JSON.stringify({ ids, archived }) }); await loadConversations(); if (archivedOpen) await openArchivedData(); setFeedback(archived ? "Saved." : "Saved."); }
+  async function archiveSelected(archived: boolean, ids = selectedIds) { if (!token || !ids.length) return; await adminFetch(token, "/api/admin/conversations", { method: "PATCH", body: JSON.stringify({ ids, archived }) }); invalidateDetailCache(ids); await loadConversations(); if (archivedOpen) await openArchivedData(); setFeedback(archived ? "Saved." : "Saved."); }
   async function deleteSelected(ids = selectedIds, confirmProtected = false) {
     if (!token || !ids.length) return;
     const ok = window.confirm("Deletion is permanent and may remove associated messages, funnel events, and operational conversation data. Continue?");
     if (!ok) return;
-    try { await adminFetch(token, "/api/admin/conversations", { method: "DELETE", body: JSON.stringify({ ids, confirmProtected }) }); await loadConversations(); setFeedback("Conversation deleted."); }
+    try { await adminFetch(token, "/api/admin/conversations", { method: "DELETE", body: JSON.stringify({ ids, confirmProtected }) }); invalidateDetailCache(ids); await loadConversations(); setDetail(null); selectedDetailSessionIdRef.current = null; setProjectDetail(null); setFeedback("Lead deleted."); }
     catch (deleteError) {
       if ((deleteError as Error & { status?: number }).status === 409 && window.confirm("This includes booked, contacted, in-progress, or completed leads. Type-level extra confirmation is required. Continue with stronger confirmation?")) await deleteSelected(ids, true);
       else setFeedback((deleteError as Error).message);
@@ -424,6 +580,7 @@ export default function Dashboard() {
     } finally { setRefreshingPage(null); }
   }
   const kpis = data?.kpis; const funnel = data?.funnel; const calendly = data?.calendly; const scores = data?.leadScores;
+  const normalizedSources = useMemo(() => normalizeSources(sources), [sources]);
   const scoreTotal = useMemo(() => scores ? scores.high + scores.medium + scores.low + scores.unscored : 0, [scores]);
   const completedLeads = leads.filter((lead) => lead.completed_at || lead.workflowStatus === "Completed");
   const visibleLeads = leadFilter === "completed" ? completedLeads : leads;
@@ -444,9 +601,9 @@ export default function Dashboard() {
         <header className="dashboard-print-header"><h1>Dashboard</h1><p>{rangeLabel(range, reportingTimezone)}</p><p>Reporting timezone: {reportingTimezone}</p><p>Generated: {dateTime(new Date().toISOString(), reportingTimezone)}</p></header>
         <div className="dashboard-controls"><div className="range-tabs" aria-label="Dashboard date range">{(["today", "week", "month"] as DashboardRange[]).map((item) => <button className={range === item ? "active" : ""} key={item} onClick={() => setRange(item)} type="button">{item === "today" ? "Today" : item === "week" ? "This Week" : "This Month"}</button>)}</div><span>{rangeLabel(range, reportingTimezone)}</span><span>{lastUpdated ? `Last updated ${dateTime(lastUpdated, displayTimezone)}` : "Waiting for live data"}</span><button className="button button-secondary compact-action print-dashboard-button" type="button" onClick={printDashboard} title="Print dashboard" aria-label="Print dashboard"><Icon name="print" /> Print Dashboard</button></div>
         <section className="kpi-grid simplified"><KpiCard label="Total Leads" value={kpis?.totalLeads || 0} isLoading={isLoading} /><article className="admin-card overview-card fade-in"><h2>Lead Intent Overview</h2><div className="status-stack"><div className="status-metric high"><span>High Intent</span><strong>{kpis?.highIntentLeads || 0}</strong><small>{pct(kpis?.totalLeads ? ((kpis?.highIntentLeads || 0) / kpis.totalLeads) * 100 : 0)}</small></div><div className="status-metric medium"><span>Medium Intent</span><strong>{kpis?.mediumIntentLeads || 0}</strong><small>{pct(kpis?.totalLeads ? ((kpis?.mediumIntentLeads || 0) / kpis.totalLeads) * 100 : 0)}</small></div><div className="status-metric low"><span>Low Intent</span><strong>{kpis?.lowIntentLeads || 0}</strong><small>{pct(kpis?.totalLeads ? ((kpis?.lowIntentLeads || 0) / kpis.totalLeads) * 100 : 0)}</small></div></div></article><article className="admin-card overview-card fade-in"><h2>Booking Journey</h2><div className="status-stack booking"><div className="status-metric offered"><span>Booking Offered</span><strong>{kpis?.calendlyShown || 0}</strong></div><div className="status-metric clicked"><span>Booking Clicked</span><strong>{kpis?.calendlyClicked || 0}</strong></div><div className="status-metric booked"><span>Confirmed Booked</span><strong>{kpis?.bookedCalls || 0}</strong></div><div className="status-metric manual"><span>Manually Marked Booked</span><strong>{conversations.filter((row) => row.calendlyStatus === "Manually Marked Booked").length}</strong></div></div></article></section>
-        <section className="dashboard-main-grid"><article className="admin-card funnel-card"><div className="dashboard-card-heading"><h2>Landed &gt; Engaged &gt; Qualified &gt; Booked</h2><span>Overall booked: {pct(funnel?.conversions.overallBooked || 0)}</span></div><div className="funnel-steps">{["landed", "engaged", "qualified", "booked"].map((stage) => <div key={stage}><strong>{(funnel?.stages as any)?.[stage] || 0}</strong><span>{stage}</span></div>)}</div></article><article className="admin-card activity-card"><h2>Today&apos;s Activity</h2><div className="activity-grid"><div><span>Website Visitors Today</span><strong>{data?.todayActivity?.websiteVisitors || 0}</strong></div><div><span>Visitors Who Clicked Chat Today</span><strong>{data?.todayActivity?.chatClicked || 0}</strong></div><div><span>Opened a Conversation Today</span><strong>{data?.todayActivity?.conversationsOpened || 0}</strong></div><div><span>Leads Needing Action Today</span><strong>{leadSummary.needingActionToday}</strong></div></div></article></section>
-        <section className="dashboard-main-grid secondary-grid"><article className="admin-card conversion-card"><h2>Booking Conversion</h2><div className="conversion-grid"><div><strong>{calendly?.shown || 0}</strong><span>Offered</span></div><div><strong>{calendly?.clicked || 0}</strong><span>Clicked</span></div><div><strong>{calendly?.booked || 0}</strong><span>Confirmed booked</span></div></div><p>Offered &gt; Clicked: {pct(calendly?.shownToClicked || 0)}</p><p>Clicked &gt; Booked: {pct(calendly?.clickedToBooked || 0)}</p><p>Offered &gt; Booked: {pct(calendly?.shownToBooked || 0)}</p></article><article className="admin-card score-breakdown"><h2>Lead Score Breakdown</h2>{scores ? (["high", "medium", "low", "unscored"] as const).map((score) => <div className="score-row" key={score}><span className={scoreClass(score)}>{score}</span><div><i style={{ width: `${scoreTotal ? (scores[score] / scoreTotal) * 100 : 0}%` }} /></div><b>{scores[score]}</b></div>) : <p>No lead scores in this range.</p>}</article></section>
-        <section className="admin-card source-card"><h2>Source / UTM Performance</h2>{sources.length ? <div className="admin-table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>High</th><th>Medium</th><th>Low</th><th>Offered</th><th>Clicked</th><th>Confirmed</th><th>Qualified %</th><th>Booked %</th></tr></thead><tbody>{sources.map((source) => <tr key={source.source}><td>{source.source}</td><td>{source.leads}</td><td>{source.high}</td><td>{source.medium}</td><td>{source.low}</td><td>{source.calendlyShown}</td><td>{source.clicked}</td><td>{source.confirmedBooked}</td><td>{pct(source.qualifiedRate)}</td><td>{pct(source.bookedRate)}</td></tr>)}</tbody></table></div> : <p className="empty-state">No source or UTM data exists for this range yet.</p>}</section><footer className="dashboard-print-footer"><span>TechQuarters Chatbot Dashboard</span><span>Generated: {dateTime(new Date().toISOString(), reportingTimezone)}</span></footer>
+        <section className="dashboard-main-grid"><article className="admin-card funnel-card"><div className="dashboard-card-heading"><h2>Landed &gt; Engaged &gt; Qualified &gt; Booked</h2><span>Overall booked: {pct(funnel?.conversions.overallBooked || 0)}</span></div><div className="funnel-steps">{["landed", "engaged", "qualified", "booked"].map((stage) => <div className={`funnel-stage ${stage}`} key={stage}><strong>{(funnel?.stages as any)?.[stage] || 0}</strong><span>{stage}</span></div>)}</div></article><article className="admin-card activity-card"><h2>Today&apos;s Activity</h2><div className="activity-grid"><div className="activity-website"><span>Website Visitors Today</span><strong>{data?.todayActivity?.websiteVisitors || 0}</strong></div><div className="activity-chat"><span>Visitors Who Clicked Chat Today</span><strong>{data?.todayActivity?.chatClicked || 0}</strong></div><div className="activity-opened"><span>Opened a Conversation Today</span><strong>{data?.todayActivity?.conversationsOpened || 0}</strong></div><div className="activity-action"><span>Leads Needing Action Today</span><strong>{leadSummary.needingActionToday}</strong></div></div></article></section>
+        <section className="dashboard-main-grid secondary-grid"><article className="admin-card conversion-card"><h2>Booking Conversion</h2><div className="conversion-grid"><div className="conversion-offered"><strong>{calendly?.shown || 0}</strong><span>Offered</span></div><div className="conversion-clicked"><strong>{calendly?.clicked || 0}</strong><span>Clicked</span></div><div className="conversion-booked"><strong>{calendly?.booked || 0}</strong><span>Confirmed booked</span></div></div><p>Offered &gt; Clicked: {pct(calendly?.shownToClicked || 0)}</p><p>Clicked &gt; Booked: {pct(calendly?.clickedToBooked || 0)}</p><p>Offered &gt; Booked: {pct(calendly?.shownToBooked || 0)}</p></article><article className="admin-card score-breakdown"><h2>Lead Score Breakdown</h2>{scores ? (["high", "medium", "low", "unscored"] as const).map((score) => <div className="score-row" key={score}><span className={scoreClass(score)}>{score}</span><div><i style={{ width: `${scoreTotal ? (scores[score] / scoreTotal) * 100 : 0}%` }} /></div><b>{scores[score]}</b></div>) : <p>No lead scores in this range.</p>}</article></section>
+        <section className="admin-card source-card"><h2>Source / UTM Performance</h2>{normalizedSources.length ? <div className="admin-table-wrap"><table><thead><tr><th>Source</th><th>Leads</th><th>High</th><th>Medium</th><th>Low</th><th>Offered</th><th>Clicked</th><th>Confirmed</th><th>Qualified %</th><th>Booked %</th></tr></thead><tbody>{normalizedSources.map((source, index) => <tr key={String(source?.source || index)}><td>{source?.source || "Unknown"}</td><td>{safeSourceNumber(source?.leads)}</td><td>{safeSourceNumber(source?.high)}</td><td>{safeSourceNumber(source?.medium)}</td><td>{safeSourceNumber(source?.low)}</td><td>{safeSourceNumber(source?.calendlyShown)}</td><td>{safeSourceNumber(source?.clicked)}</td><td>{safeSourceNumber(source?.confirmedBooked)}</td><td>{pct(safeSourceNumber(source?.qualifiedRate))}</td><td>{pct(safeSourceNumber(source?.bookedRate))}</td></tr>)}</tbody></table></div> : <p className="empty-state">No source or UTM data exists for this range yet.</p>}</section><footer className="dashboard-print-footer"><span>TechQuarters Chatbot Dashboard</span><span>Generated: {dateTime(new Date().toISOString(), reportingTimezone)}</span></footer>
       </div> : null}
 
       {activePage === "pipeline" ? <><div className="filter-row pipeline-controls">{["scored", "all", "high", "medium", "low", "unscored"].map((filter) => <button className={scoreFilter === filter ? "active" : ""} key={filter} type="button" onClick={() => { setScoreFilter(filter); setSelectMode(false); }}>{filter === "all" ? "All Sessions" : filter}</button>)}<select value={conversationSize} onChange={(event) => { setConversationSize(event.target.value); localStorage.setItem("tq-admin-default-page-size", event.target.value); setSelectMode(false); }}>{["10", "20", "50", "all"].map((size) => <option key={size} value={size}>Show {size === "all" ? "All" : size}</option>)}</select><select value={conversationArchiveView} onChange={(event) => { setConversationArchiveView(event.target.value); setSelectMode(false); }}><option value="active">Active</option><option value="archived">Archived</option></select><button className="button button-secondary" type="button" onClick={() => setSelectMode(!selectMode)}>{selectMode ? "Done Selecting" : "Select"}</button><button className="button button-secondary" type="button" onClick={exportCsv}>Export CSV</button></div><p className="table-count">{conversationMeta.filteredCount} filtered, {conversationMeta.totalSessionCount} total sessions</p>{selectMode && selectedIds.length ? <div className="bulk-action-bar"><span>{selectedIds.length} selected</span><button className="button button-secondary compact-action" title={conversationArchiveView === "archived" ? "Restore selected" : "Archive selected"} aria-label={conversationArchiveView === "archived" ? "Restore selected" : "Archive selected"} type="button" onClick={() => void archiveSelected(conversationArchiveView !== "archived")}>{conversationArchiveView === "archived" ? "Restore Selected" : "Archive Selected"}</button><button className="button button-secondary compact-action danger" title="Delete selected" aria-label="Delete selected" type="button" onClick={() => void deleteSelected()}>Delete Selected</button></div> : null}<ConversationTable displayTimezone={displayTimezone} rows={conversations} selected={selectedIds} setSelected={setSelectedIds} selectMode={selectMode} onView={openDetail} /></> : null}
@@ -455,14 +612,14 @@ export default function Dashboard() {
 
       {activePage === "settings" ? <SettingsPanel browserTimezone={detectedTimezone} displayTimezonePreference={displayTimezonePreference} setDisplayTimezonePreference={setDisplayTimezonePreference} reportingTimezone={reportingTimezone} setReportingTimezone={setReportingTimezone} onSaveReportingTimezone={async () => { if (token) await adminFetch(token, "/api/admin/settings", { method: "PATCH", body: JSON.stringify({ reporting_timezone: reportingTimezone }) }); }} onLoadAssigneeUsage={loadAssigneeUsage} onDeleteAssignee={deleteAssignee} theme={theme} setTheme={setTheme} assignees={assignees} setAssignees={setAssignees} newAssignee={newAssignee} setNewAssignee={setNewAssignee} conversationSize={conversationSize} setConversationSize={setConversationSize} scoreFilter={scoreFilter} setScoreFilter={setScoreFilter} onSaved={() => setFeedback("Saved.")} onError={setFeedback} onOpenArchived={openArchivedData} /> : null}
     </div>
-    {detail ? <LeadDetailModal displayTimezone={displayTimezone} detail={detail} onClose={() => setDetail(null)} onUpdate={updateLead} onMoveToProjects={moveLeadToProjects} onArchive={() => void archiveSelected(true, [detail.session.id])} onDelete={() => void deleteSelected([detail.session.id])} /> : null}
+    {detail ? <LeadDetailModal key={detail.session.id} displayTimezone={displayTimezone} detail={detail} onClose={() => { selectedDetailSessionIdRef.current = null; setDetail(null); }} onUpdate={updateLead} onMoveToProjects={moveLeadToProjects} onArchive={() => void archiveSelected(true, [detail.session.id])} onDelete={() => void deleteSelected([detail.session.id])} onRetry={retryDetailLoad} /> : null}
     {projectDetail ? <ProjectDetail displayTimezone={displayTimezone} lead={projectDetail} onClose={() => setProjectDetail(null)} onUpdate={updateLead} onArchive={() => void updateLead(projectDetail.id, { archived_at: new Date().toISOString() })} onDelete={() => { if (window.confirm("Delete this project lead data? This is permanent.")) void updateLead(projectDetail.id, { archived_at: new Date().toISOString() }); }} /> : null}
     {archivedOpen ? <ArchivedDataModal displayTimezone={displayTimezone} rows={archivedRows} selected={archivedSelected} setSelected={setArchivedSelected} onClose={() => setArchivedOpen(false)} onRestore={(ids) => void archiveSelected(false, ids)} onDelete={(ids) => void deleteSelected(ids)} /> : null}
   </section>;
 }
 
-function ConversationTable({ rows, selected, setSelected, selectMode, onView, displayTimezone }: { rows: ConversationRow[]; selected: string[]; setSelected: (ids: string[]) => void; selectMode: boolean; onView: (id: string) => void; displayTimezone: string }) {
-  return <div className="admin-card admin-table-wrap lead-pipeline-table"><table><thead><tr>{selectMode ? <th><input aria-label="Select all visible leads" type="checkbox" checked={rows.length > 0 && selected.length === rows.length} onChange={(event) => setSelected(event.target.checked ? rows.map((row) => row.id) : [])} /></th> : null}<th>Lead</th><th>Business</th><th>Score</th><th>Status</th><th>Main Problem</th><th>AI Summary</th><th>Last Activity</th><th>Actions</th></tr></thead><tbody>{rows.length ? rows.map((row) => <tr className="clickable-row" key={row.id} onClick={() => onView(row.id)}>{selectMode ? <td onClick={(event) => event.stopPropagation()}><input aria-label={`Select ${row.displayName}`} type="checkbox" checked={selected.includes(row.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, row.id] : selected.filter((id) => id !== row.id))} /></td> : null}<td><strong>{row.displayName}</strong><small>{row.email || "No email"}</small></td><td>{row.businessName || "No business"}</td><td><span className={scoreClass(row.score)}>{row.score}</span></td><td>{bookingTableStatus(row.calendlyStatus)}</td><td>{row.mainProblem || "Not captured"}</td><td className="summary-cell" title={row.summary || "No session summary yet."}><span className="summary-clamp">{row.summary || "No session summary yet."}</span></td><td>{dateTime(row.lastActivity, displayTimezone)}</td><td><button className="icon-action" type="button" title="View lead details" aria-label="View lead details" onClick={(event) => { event.stopPropagation(); onView(row.id); }}><Icon name="eye" /></button></td></tr>) : <tr><td colSpan={selectMode ? 9 : 8}><p className="empty-state">No lead sessions match this view.</p></td></tr>}</tbody></table></div>;
+function ConversationTable({ rows, selected, setSelected, selectMode, onView, displayTimezone }: { rows: ConversationRow[]; selected: string[]; setSelected: (ids: string[]) => void; selectMode: boolean; onView: (row: ConversationRow) => void; displayTimezone: string }) {
+  return <div className="admin-card admin-table-wrap lead-pipeline-table"><table><thead><tr>{selectMode ? <th><input aria-label="Select all visible leads" type="checkbox" checked={rows.length > 0 && selected.length === rows.length} onChange={(event) => setSelected(event.target.checked ? rows.map((row) => row.id) : [])} /></th> : null}<th>Lead</th><th>Business</th><th>Score</th><th>Status</th><th>Main Problem</th><th>AI Summary</th><th>Last Activity</th><th>Actions</th></tr></thead><tbody>{rows.length ? rows.map((row) => <tr className="clickable-row" key={row.id} onClick={() => onView(row)}>{selectMode ? <td onClick={(event) => event.stopPropagation()}><input aria-label={`Select ${row.displayName}`} type="checkbox" checked={selected.includes(row.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, row.id] : selected.filter((id) => id !== row.id))} /></td> : null}<td><strong>{row.displayName}</strong><small>{row.email || "No email"}</small></td><td>{row.businessName || "No business"}</td><td><span className={scoreClass(row.score)}>{row.score}</span></td><td>{bookingTableStatus(row.calendlyStatus)}</td><td>{row.mainProblem || "Not captured"}</td><td className="summary-cell" title={row.summary || "No session summary yet."}><span className="summary-clamp">{row.summary || "No session summary yet."}</span></td><td>{dateTime(row.lastActivity, displayTimezone)}</td><td><button className="icon-action" type="button" title="View lead details" aria-label="View lead details" onClick={(event) => { event.stopPropagation(); onView(row); }}><Icon name="eye" /></button></td></tr>) : <tr><td colSpan={selectMode ? 9 : 8}><p className="empty-state">No lead sessions match this view.</p></td></tr>}</tbody></table></div>;
 }
 
 function ProjectTable({ leads, assignees, onUpdate, onView, displayTimezone }: { leads: LeadRow[]; assignees: string[]; onUpdate: (id: string, updates: Record<string, unknown>) => Promise<void>; onView: (lead: LeadRow) => void; displayTimezone: string }) {

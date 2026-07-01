@@ -459,3 +459,54 @@ p { color:var(--muted); line-height:1.75; }
 
 /* Public chatbot booking CTA card */
 .booking-cta-card{display:grid;gap:8px;margin-top:12px}.booking-cta-card small{color:#9aa8bd;font-size:.66rem;line-height:1.4}.booking-cta-card .booking-cta{position:static;width:100%;justify-content:center;font-size:.72rem;min-height:42px}
+
+/* Admin dashboard UI polish: toast, sidebar active state, and status-card accents */
+@media screen{
+  :root[data-admin-theme="dark"]{
+    --admin-bg:#080d15;
+    --admin-panel:#111722;
+    --admin-panel-2:#171e2b;
+    --admin-soft:rgba(148,163,184,.08);
+    --admin-line:rgba(148,163,184,.18);
+  }
+  :root[data-admin-theme="light"]{
+    --admin-bg:#f4f7fb;
+    --admin-panel:#ffffff;
+    --admin-panel-2:#edf3f9;
+    --admin-soft:rgba(37,56,88,.06);
+    --admin-line:rgba(22,34,55,.15);
+  }
+  .admin-workspace{background:linear-gradient(180deg,var(--admin-bg),color-mix(in srgb,var(--admin-bg) 90%,#0f172a))}
+  .admin-card,.kpi-card,.overview-card,.funnel-card,.activity-card,.conversion-card,.score-breakdown,.source-card{border-color:var(--admin-line);box-shadow:0 18px 42px rgba(0,0,0,.16),inset 0 1px color-mix(in srgb,#fff 4%,transparent)}
+  .admin-card:hover,.kpi-card:hover,.overview-card:hover,.funnel-card:hover,.activity-card:hover,.conversion-card:hover,.score-breakdown:hover,.source-card:hover{border-color:color-mix(in srgb,var(--admin-accent) 36%,var(--admin-line));box-shadow:0 22px 50px rgba(0,0,0,.2),0 0 0 1px color-mix(in srgb,var(--admin-accent) 12%,transparent)}
+  .admin-sidebar nav button{position:relative;overflow:hidden;transition:background .18s ease,border-color .18s ease,color .18s ease,box-shadow .18s ease,transform .18s ease}
+  .admin-sidebar nav button:hover:not(.active){background:color-mix(in srgb,var(--admin-accent) 9%,var(--admin-soft));border-color:color-mix(in srgb,var(--admin-accent) 18%,var(--admin-line));color:var(--admin-text)}
+  .admin-sidebar nav button.active{background:linear-gradient(135deg,color-mix(in srgb,var(--admin-accent) 28%,var(--admin-panel)),color-mix(in srgb,#4f46e5 18%,var(--admin-panel)));border-color:color-mix(in srgb,var(--admin-accent) 48%,var(--admin-line));color:var(--admin-text);box-shadow:inset 3px 0 0 var(--admin-accent),0 10px 24px color-mix(in srgb,var(--admin-accent) 14%,transparent)}
+  .admin-sidebar nav button.active svg{color:#78b7ff}
+  :root[data-admin-theme="light"] .admin-sidebar nav button.active{background:linear-gradient(135deg,#e6f0ff,#eef2ff);color:#164a9d;box-shadow:inset 3px 0 0 #246bce,0 10px 24px rgba(36,107,206,.12)}
+  :root[data-admin-theme="light"] .admin-sidebar nav button.active svg{color:#1f65c8}
+
+  .admin-toast-region{left:50%!important;right:auto!important;bottom:22px!important;top:auto!important;transform:translateX(-50%)!important;width:max-content!important;min-width:0!important;max-width:min(420px,calc(100vw - 28px))!important;display:flex!important;justify-content:center!important;pointer-events:none!important}
+  .admin-toast-region p{display:inline-flex!important;align-items:center!important;gap:9px!important;width:max-content!important;max-width:100%!important;min-width:0!important;padding:11px 15px!important;border-radius:10px!important;background:var(--admin-panel)!important;border:1px solid color-mix(in srgb,currentColor 28%,var(--admin-line))!important;box-shadow:0 18px 42px rgba(0,0,0,.26)!important;font-size:.82rem!important;line-height:1.25!important;animation:adminToastIn .18s ease-out both!important}
+  .admin-toast-region p:before{content:"";width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:currentColor;box-shadow:0 0 12px currentColor}
+  .admin-feedback{color:var(--admin-good)!important}.admin-error{color:var(--admin-bad)!important}
+  @keyframes adminToastIn{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+
+  .status-metric,.funnel-steps>div,.activity-grid div,.conversion-grid div{position:relative;overflow:hidden;border-color:color-mix(in srgb,var(--accent) 34%,var(--admin-line));background:linear-gradient(145deg,color-mix(in srgb,var(--accent) 12%,var(--admin-panel)),var(--admin-panel-2));box-shadow:inset 0 1px color-mix(in srgb,#fff 5%,transparent);transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease,background .2s ease}
+  .status-metric:before,.funnel-steps>div:before,.activity-grid div:before,.conversion-grid div:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--accent);opacity:.78}
+  .status-metric:hover,.funnel-steps>div:hover,.activity-grid div:hover,.conversion-grid div:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--accent) 58%,var(--admin-line));box-shadow:0 14px 30px color-mix(in srgb,var(--accent) 13%,transparent),inset 0 1px color-mix(in srgb,#fff 8%,transparent)}
+  .status-metric.high{--accent:#43c98f}.status-metric.medium{--accent:#d8a229}.status-metric.low{--accent:#8b97aa}
+  .status-metric.offered{--accent:#5b8def}.status-metric.clicked{--accent:#d7a12b}.status-metric.booked{--accent:#36c487}.status-metric.manual{--accent:#8b6ee8}
+  .funnel-stage.landed{--accent:#8b97aa}.funnel-stage.engaged{--accent:#4f95e8}.funnel-stage.qualified{--accent:#d8a229}.funnel-stage.booked{--accent:#36c487}
+  .activity-website{--accent:#4f95e8}.activity-chat{--accent:#8174e8}.activity-opened{--accent:#2fb8b4}.activity-action{--accent:#e09a28}
+  .conversion-offered{--accent:#5b8def}.conversion-clicked{--accent:#d7a12b}.conversion-booked{--accent:#36c487}
+  .status-metric.booked{background:linear-gradient(145deg,color-mix(in srgb,#36c487 18%,var(--admin-panel)),var(--admin-panel-2));border-color:color-mix(in srgb,#36c487 58%,var(--admin-line))}
+  .status-metric.manual{background:linear-gradient(145deg,color-mix(in srgb,#8b6ee8 10%,var(--admin-panel)),var(--admin-panel-2))}
+  .dashboard-card-heading span{border:1px solid color-mix(in srgb,var(--admin-accent) 25%,var(--admin-line));border-radius:999px;padding:5px 9px;background:color-mix(in srgb,var(--admin-accent) 8%,transparent);color:color-mix(in srgb,var(--admin-accent) 55%,var(--admin-muted))}
+  :root[data-admin-theme="light"] .status-metric,
+  :root[data-admin-theme="light"] .funnel-steps>div,
+  :root[data-admin-theme="light"] .activity-grid div,
+  :root[data-admin-theme="light"] .conversion-grid div{background:linear-gradient(145deg,color-mix(in srgb,var(--accent) 11%,#fff),#f8fafc);box-shadow:0 8px 18px rgba(20,32,51,.06),inset 0 1px #fff}
+  @media(max-width:900px){.admin-toast-region{left:14px!important;right:14px!important;transform:none!important;width:auto!important;max-width:none!important}.admin-toast-region p{width:auto!important;max-width:100%!important}}
+}
+.detail-section-loading{display:grid;gap:10px;min-height:92px;align-content:center}.detail-section-loading p{margin:0!important;color:var(--admin-muted)!important;border:0!important;padding:0!important}.detail-skeleton-line{width:min(280px,100%);height:18px}.detail-section-error{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:80px}.detail-section-error p{margin:0!important;color:var(--admin-bad)!important;border:0!important;padding:0!important}

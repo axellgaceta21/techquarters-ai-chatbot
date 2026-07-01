@@ -5,7 +5,7 @@
       "destination": "/api/:path*"
     },
     {
-      "source": "/:path*",
+      "source": "/:path((?!api/|@vite/|@react-refresh|src/|shared/|node_modules/|assets/|favicon\\.svg|icons\\.svg|logo\\.png).*)",
       "destination": "/index.html"
     }
   ]
