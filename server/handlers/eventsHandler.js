@@ -1,4 +1,4 @@
-import { sendToN8n } from "../services/n8nService.js";
+﻿import { enqueueN8nNotification, notificationState, processN8nNotificationRetries } from "../services/n8nService.js";
 import { getSupabaseAdminClient } from "../services/supabaseAdminClient.js";
 
 const FORWARDED_EVENTS = new Set([
@@ -78,7 +78,7 @@ async function persistFunnelEvent(event) {
     lead_id: event.lead_id,
     session_id: event.session_id,
     event_type: event.event_type,
-    event_data: { ...event, idempotency_key: idempotencyKey },
+    event_data: { ...event, idempotency_key: idempotencyKey, ...(FORWARDED_EVENTS.has(event.event_type) ? { notification: notificationState("pending") } : {}) },
     idempotency_key: idempotencyKey,
   });
 
@@ -186,22 +186,19 @@ export async function handleEventsRequest(req, res) {
       return res.json({ success: true, forwarded: false, duplicate: true });
     }
 
-    console.info("n8n dispatch attempted:", {
+    console.info("n8n dispatch queued:", {
       event_type: payload.event_type,
       lead_id: payload.lead_id,
       session_id: payload.session_id,
       idempotency_key: payload.idempotency_key,
     });
-    await sendToN8n(payload);
-    console.info("n8n dispatch success:", {
-      event_type: payload.event_type,
-      lead_id: payload.lead_id,
-      session_id: payload.session_id,
-      idempotency_key: payload.idempotency_key,
+    enqueueN8nNotification(payload);
+    processN8nNotificationRetries().catch((retryError) => {
+      console.warn("n8n deferred retry check skipped:", retryError.message);
     });
-    return res.json({ success: true, forwarded: true, duplicate: false });
+    return res.json({ success: true, forwarded: true, queued: true, duplicate: false });
   } catch (error) {
-    console.error("n8n dispatch failure or event route error:", {
+    console.error("Event route persistence failure:", {
       message: error.message,
       code: error.code,
       details: error.details,
@@ -212,4 +209,5 @@ export async function handleEventsRequest(req, res) {
     });
   }
 }
+
 
