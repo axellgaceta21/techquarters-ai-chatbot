@@ -492,3 +492,5 @@ p { color:var(--muted); line-height:1.75; }
     .dashboard-screen-grid .panel-heading{min-height:0}
   }
 }
+.required-mark{color:#8fc3ff}.contact-field-error,.contact-submit-error{display:block;color:#ffb4b4;font-size:.68rem;font-weight:750;line-height:1.45}.contact-submit-error{margin:4px 0 0}.contact-form [aria-invalid="true"]{border-color:rgba(255,180,180,.68)}
+
