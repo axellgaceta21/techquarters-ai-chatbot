@@ -292,20 +292,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [persistState]);
 
   useEffect(() => {
-    const storedIdentity = identityRef.current;
-    if (!storedIdentity || storedState.messages?.length) {
-      if (!storedIdentity) void initializeChat();
-      return;
-    }
+    let isMounted = true;
 
-    void getMessagesBySession(storedIdentity.sessionId)
-      .then((savedMessages) => {
-        if (!savedMessages.length) return;
+    async function restoreHistory() {
+      const storedIdentity = identityRef.current;
+      if (!storedIdentity || storedState.messages?.length) {
+        if (!storedIdentity) {
+          await initializeChat();
+        }
+        return;
+      }
+
+      try {
+        const savedMessages = await getMessagesBySession(storedIdentity.sessionId);
+        if (!isMounted || !savedMessages.length) return;
         const restored = [WELCOME_MESSAGE, ...savedMessages] as ChatMessage[];
         setMessages(restored);
         persistState(restored);
-      })
-      .catch((error) => console.error("Chat history restore failed:", error));
+      } catch (error) {
+        console.error("Chat history restore failed:", error);
+      }
+    }
+
+    void restoreHistory();
+
+    return () => {
+      isMounted = false;
+    };
   }, [initializeChat, persistState, storedState.messages?.length]);
 
   useEffect(() => {
