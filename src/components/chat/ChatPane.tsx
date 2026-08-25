@@ -26,7 +26,9 @@ export default function ChatPane() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (isOpen) window.setTimeout(() => inputRef.current?.focus(), 280);
+    if (!isOpen) return;
+    const timer = window.setTimeout(() => inputRef.current?.focus(), 280);
+    return () => window.clearTimeout(timer);
   }, [isOpen]);
 
   if (!isOpen) return null;

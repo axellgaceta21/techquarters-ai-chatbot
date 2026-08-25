@@ -14,7 +14,9 @@ import Dashboard from "./pages/Dashboard";
 
 function ScrollManager() {
   const { pathname } = useLocation();
-  useEffect(() => window.scrollTo({ top: 0, behavior: "instant" }), [pathname]);
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [pathname]);
   return null;
 }
 
@@ -23,12 +25,13 @@ function App() {
   const isAdminArea = pathname.startsWith("/admin") || pathname === "/dashboard";
 
   return (
-    <div className="site-shell">
+    <div className={`site-shell ${isAdminArea ? "admin-area-shell" : ""}`}>
       <ScrollManager />
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
+      {!isAdminArea && <div className="ambient ambient-one" />}
+      {!isAdminArea && <div className="ambient ambient-two" />}
       {!isAdminArea ? <Navbar /> : null}
-      <main><Routes>
+      <main className={isAdminArea ? "admin-root-main" : ""}>
+        <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/services" element={<Services />} />
           <Route path="/systems" element={<Systems />} />
@@ -37,7 +40,8 @@ function App() {
           <Route path="/admin/login" element={<AdminLogin />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes></main>
+        </Routes>
+      </main>
       {!isAdminArea ? <Footer /> : null}
       {!isAdminArea ? <ChatLauncher /> : null}
       {!isAdminArea ? <ChatPane /> : null}
